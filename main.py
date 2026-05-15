@@ -8,24 +8,31 @@ Usage:
 import asyncio
 import sys
 
-from src.graph.shopping_graph import build_shopping_graph
+from src.graph.shopping_graph import run_shopping, run_shopping_stream
 
 
 async def run_once(user_input: str):
-    app = build_shopping_graph()
-    result = await app.ainvoke({
-        "user_input": user_input,
-        "category": None,
-        "keyword": None,
-        "max_price": None,
-        "results": [],
-        "answer": "",
-    })
-    print(result["answer"])
+    result = await run_shopping(user_input)
+    print(result.get("explanation", ""))
+
+
+async def run_once_stream(user_input: str):
+    async for event in run_shopping_stream(user_input):
+        etype = event["event"]
+        data = event["data"]
+        if etype == "intent":
+            print(f"[意图] {data.get('intent', '')}")
+        elif etype == "entities":
+            print(f"[实体] {data.get('entities', {})}")
+        elif etype == "clarification":
+            print(f"[追问] {data.get('explanation', '')}")
+        elif etype == "explanation":
+            print(f"\n{data.get('text', '')}")
+        elif etype == "done":
+            print(f"\n[完成] 耗时 {data.get('latency_ms', 0):.0f}ms")
 
 
 async def interactive():
-    app = build_shopping_graph()
     print("ShoppingAgent — 输入需求开始购物，输入 quit 退出\n")
     while True:
         try:
@@ -34,20 +41,18 @@ async def interactive():
             break
         if not user_input or user_input.lower() in ("quit", "exit", "q"):
             break
-        result = await app.ainvoke({
-            "user_input": user_input,
-            "category": None,
-            "keyword": None,
-            "max_price": None,
-            "results": [],
-            "answer": "",
-        })
-        print(f"\nAgent: {result['answer']}")
+        result = await run_shopping(user_input)
+        print(f"\nAgent: {result.get('explanation', '')}")
 
 
 def main():
     if len(sys.argv) > 1:
-        asyncio.run(run_once(" ".join(sys.argv[1:])))
+        text = " ".join(sys.argv[1:])
+        if "--stream" in text:
+            text = text.replace("--stream", "").strip()
+            asyncio.run(run_once_stream(text))
+        else:
+            asyncio.run(run_once(text))
     else:
         asyncio.run(interactive())
 
