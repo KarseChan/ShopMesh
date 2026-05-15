@@ -353,7 +353,7 @@ Phase 5  简历包装          Week 11-12
 - **向量库选型**：Qdrant（MVP 即用）
   - 理由：原生 Payload 预过滤，HNSW 遍历时直接跳过不满足条件的向量，召回率 ~100%
   - 对比 FAISS：FAISS Top-K → Python 过滤 → 漏斗陷阱（召回率 40-70%）
-  - 部署：`docker run -p 6333:6333 qdrant/qdrant` 一行命令
+  - 部署：`docker run -d --name qdrant -p 6333:6333 -p 6334:6334 -v ./docker/qdrant_storage:/qdrant/storage qdrant/qdrant`（挂载 volume 持久化，容器重建不丢数据）
 - **BGE-M3 部署方案（Ollama 本地，天然异步）**：
   - 通过 Ollama HTTP API 调用本地 BGE-M3，天然异步，**无阻塞事件循环问题**
   - Ollama 在后台常驻，模型启动后常驻内存，无冷启动开销

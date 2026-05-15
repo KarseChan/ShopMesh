@@ -26,6 +26,9 @@ data/*.json
 !data/mock_data_annotations.md
 !data/.gitkeep
 
+# Docker persistent storage
+docker/
+
 # OS
 .DS_Store
 Thumbs.db
