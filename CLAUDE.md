@@ -23,8 +23,8 @@ Phase 0：骨架搭建（T0.1 → T0.7）
 每个小任务按以下步骤执行：
 
 1. **实现**：按任务文档编写代码
-2. **单元测试**：对本次改动做简单验证（import 检查、函数调用、关键逻辑断言）
-3. **QA**：运行 `/qa` 做质量检查
+2. **单元测试**：T0.4 及之后的任务需要做简单验证（import 检查、函数调用、关键逻辑断言）；T0.1~T0.3（环境搭建、数据生成）跳过测试
+3. **QA**：T0.4 及之后运行 `/qa`；T0.1~T0.3 跳过
 4. **Git 提交**：commit + push，commit message 格式：`完成 T0.x: <任务简述>`
 5. **暂停等待确认**：告知用户当前任务已完成，等用户确认后再开始下一个任务
 
@@ -33,7 +33,7 @@ Phase 0：骨架搭建（T0.1 → T0.7）
 ## 关于 superpowers / gstack
 - 不要主动调用 superpowers 的 skills（如 writing-plans、subagent-driven-development 等）
 - gstack 可按需使用，但遵循以下原则：
-  - `/qa`：每个任务完成后使用
+  - `/qa`：T0.4 及之后每个任务完成后使用
   - `/review`：仅在完成一个完整 Phase 后使用，或你觉得代码改动较大需要审查时
   - 其他 skills（/ship、/autoplan、/office-hours 等）：不用，除非我明确要求
 - 不要一次性调用多个 skills，按需单个调用
