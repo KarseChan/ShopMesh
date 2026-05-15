@@ -30,6 +30,14 @@ redis:
 database:
   url: postgresql://postgres:password@localhost:5432/shopping_agent
 
+# Memory
+memory:
+  context_window: 8192
+  compression_threshold: 0.6
+  sliding_window_rounds: 5
+  summary_max_words: 200
+  recall_top_k: 5
+
 # Logging
 logging:
   level: INFO
