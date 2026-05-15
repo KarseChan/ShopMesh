@@ -1,6 +1,7 @@
-"""LLM client for OpenAI-compatible APIs."""
+"""LLM client factory — supports multiple providers with per-agent config."""
 
 import json
+from functools import lru_cache
 
 import httpx
 
@@ -10,13 +11,13 @@ from src.config import config
 class LLMClient:
     """Thin wrapper around OpenAI-compatible chat completions API."""
 
-    def __init__(self):
-        cfg = config["llm"]["default"]
-        self.model = cfg["model"]
-        self.base_url = cfg["base_url"].rstrip("/")
-        self.api_key = cfg.get("api_key", "")
-        self.temperature = cfg.get("temperature", 0.1)
-        self.max_tokens = cfg.get("max_tokens", 2048)
+    def __init__(self, model: str, base_url: str, api_key: str = "",
+                 temperature: float = 0.1, max_tokens: int = 2048):
+        self.model = model
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.temperature = temperature
+        self.max_tokens = max_tokens
 
     async def chat(self, messages: list[dict], tools: list[dict] | None = None) -> dict:
         """Send chat completion request and return the response message."""
@@ -46,9 +47,26 @@ class LLMClient:
         """Chat and parse JSON from the response content."""
         msg = await self.chat(messages)
         content = msg.get("content", "")
-        # Try to extract JSON from markdown code blocks or raw content
         if "```json" in content:
             content = content.split("```json")[1].split("```")[0]
         elif "```" in content:
             content = content.split("```")[1].split("```")[0]
         return json.loads(content.strip())
+
+
+@lru_cache(maxsize=8)
+def get_llm(agent_name: str = "default") -> LLMClient:
+    """Factory: get LLM client by agent name. Instance is cached.
+
+    Looks up config["llm"][agent_name], falls back to config["llm"]["default"].
+    Each agent can override model / base_url / api_key independently.
+    """
+    llm_cfg = config["llm"]
+    cfg = llm_cfg.get(agent_name, llm_cfg["default"])
+    return LLMClient(
+        model=cfg["model"],
+        base_url=cfg["base_url"],
+        api_key=cfg.get("api_key", ""),
+        temperature=cfg.get("temperature", 0.1),
+        max_tokens=cfg.get("max_tokens", 2048),
+    )

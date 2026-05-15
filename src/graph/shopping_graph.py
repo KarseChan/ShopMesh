@@ -4,7 +4,7 @@ from typing import TypedDict
 
 from langgraph.graph import END, StateGraph
 
-from src.models.llm_client import LLMClient
+from src.models.llm_client import get_llm
 from src.tools.search_tool import search_products
 
 
@@ -19,11 +19,11 @@ class MiniState(TypedDict):
 
 
 # --- Nodes ---
-llm = LLMClient()
 
 
 async def parse_intent(state: MiniState) -> dict:
     """Use LLM to extract structured search params from user input."""
+    llm = get_llm()
     user_input = state["user_input"]
     messages = [
         {
