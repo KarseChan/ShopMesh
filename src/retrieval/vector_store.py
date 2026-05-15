@@ -57,13 +57,13 @@ class QdrantVectorStore(VectorStore):
                 conditions.append(FieldCondition(key=key, match=MatchValue(value=value)))
             query_filter = Filter(must=conditions)
 
-        results = await self._client.search(
+        results = await self._client.query_points(
             collection_name=collection,
-            query_vector=query_vector,
+            query=query_vector,
             limit=limit,
             query_filter=query_filter,
         )
-        return [{"id": r.id, "score": r.score, "payload": r.payload} for r in results]
+        return [{"id": r.id, "score": r.score, "payload": r.payload} for r in results.points]
 
 
 def get_vector_store() -> VectorStore:

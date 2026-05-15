@@ -1,19 +1,20 @@
 # LLM
 llm:
   default:
-    provider: ollama
-    model: qwen2.5:7b
-    base_url: http://localhost:11434/v1
+    provider: openai_compatible
+    model: astron-code-latest
+    base_url: https://maas-coding-api.cn-huabei-1.xf-yun.com/v2
+    api_key: ${LLM_API_KEY}
     temperature: 0.1
     max_tokens: 2048
 
 # Embedding
 embedding:
   default:
-    provider: sentence_transformers
-    model: BAAI/bge-m3
-    device: cpu
-    dimensions: 768
+    provider: ollama
+    model: bge-m3
+    base_url: http://localhost:11505
+    dimensions: 1024
 
 # Vector DB
 vector_db:
