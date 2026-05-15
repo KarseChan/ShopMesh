@@ -19,8 +19,11 @@ venv/
 logs/
 *.log
 
-# Data (large files)
+# Data
 data/*.json
+!data/mock_data.json
+!data/mock_products_5k.json
+!data/mock_data_annotations.md
 !data/.gitkeep
 
 # OS
