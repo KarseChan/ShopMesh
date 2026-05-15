@@ -30,6 +30,17 @@ redis:
 database:
   url: postgresql://postgres:password@localhost:5432/shopping_agent
 
+# Router
+router:
+  routes:
+    search: search_agent
+    compare: compare_agent
+    recommend: recommend_agent
+    detail: detail_agent
+    order: order_agent
+  fallback: general_agent
+  semantic_threshold: 0.80
+
 # Memory
 memory:
   context_window: 8192
