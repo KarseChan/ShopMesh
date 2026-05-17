@@ -13,6 +13,7 @@ Latency tiers:
 
 import asyncio
 import time
+import uuid
 from typing import AsyncGenerator
 
 from langgraph.graph import END, StateGraph
@@ -22,10 +23,11 @@ from src.agents.disambiguator import disambiguate
 from src.agents.entity_extractor import extract_entities
 from src.agents.explainer import generate_reason, polish_reason
 from src.agents.ranker import rank, explain_rank
+from src.agents.scenario_filter import filter_by_scenario
 from src.graph.checkpointer import get_checkpointer
 from src.graph.state import ShoppingState
 from src.memory.memory_retriever import recall, should_recall, write_chunk
-from src.observability.logger import get_logger
+from src.observability.logger import get_logger, generate_request_id, set_request_context
 from src.retrieval.hybrid_retriever import hybrid_search
 from src.tools.promotion_calculator import calculate_promotion
 
@@ -61,11 +63,12 @@ async def node_extract_entities(state: ShoppingState) -> dict:
     user_input = _get_user_input(state)
     entities = await extract_entities(user_input)
 
-    # Disambiguate if needed
+    # Disambiguate if needed — pass raw query for when entity value is None
     if entities.get("ambiguous"):
+        entities["_raw_query"] = user_input
         disambig_result = await disambiguate(entities)
-        if disambig_result["resolved"]:
-            entities = disambig_result["entities"]
+        # Always use disambiguator's entities (includes resolved values or _disambiguation_question)
+        entities = disambig_result["entities"]
 
     return {"entities": entities}
 
@@ -153,6 +156,24 @@ async def node_rank(state: ShoppingState) -> dict:
             p["is_abnormal"] = calc.get("is_abnormal", False)
 
     ranked = rank(products, search_scores=scores, entities=entities)
+
+    # Post-filter: scenario suitability
+    before_scenario = len(ranked)
+    ranked = filter_by_scenario(ranked, entities)
+    if len(ranked) < before_scenario:
+        logger.info("scenario_post_filter", removed=before_scenario - len(ranked),
+                    remaining=len(ranked))
+
+    # Post-filter: remove over-budget items (abnormal items shown with warning in frontend)
+    price_max = entities.get("price_max")
+    before_count = len(ranked)
+    if price_max is not None:
+        ranked = [p for p in ranked if (p.get("final_price") or p.get("price", 0)) <= price_max]
+    after_count = len(ranked)
+    if after_count < before_count:
+        logger.info("post_filter", removed=before_count - after_count,
+                    budget=price_max, remaining=after_count)
+
     return {"ranked_results": ranked}
 
 
@@ -163,12 +184,15 @@ async def node_explain(state: ShoppingState) -> dict:
         return {"explanation": "抱歉，没有找到符合条件的商品。"}
 
     # Generate reasons for top 3
+    PLATFORM_NAMES = {"jd": "京东", "tb": "淘宝", "pdd": "拼多多"}
     reasons = []
     for product in ranked[:3]:
         structured = generate_reason(product)
         polished = await polish_reason(product, structured)
+        platform_id = product.get("platform_id", "")
         reasons.append({
             "product": product.get("name", ""),
+            "platform": PLATFORM_NAMES.get(platform_id, platform_id),
             "price": product.get("final_price", product.get("price", 0)),
             "reason": polished,
             "rank_score": product.get("rank_score", 0),
@@ -177,7 +201,9 @@ async def node_explain(state: ShoppingState) -> dict:
     # Format output
     lines = ["为你推荐：\n"]
     for i, r in enumerate(reasons, 1):
-        lines.append(f"{i}. {r['product']} — ¥{r['price']}")
+        platform = r.get("platform", "")
+        platform_tag = f" [{platform}]" if platform else ""
+        lines.append(f"{i}. {r['product']}{platform_tag} — ¥{r['price']}")
         lines.append(f"   推荐理由：{r['reason']}")
         lines.append("")
 
@@ -255,6 +281,7 @@ async def run_shopping(user_input: str, session_id: str = "default") -> dict:
 
     Returns the final state with explanation and ranked results.
     """
+    set_request_context(generate_request_id(), session_id)
     app = build_shopping_graph()
     start = time.time()
 
@@ -270,6 +297,8 @@ async def run_shopping(user_input: str, session_id: str = "default") -> dict:
         "ranked_results": [],
         "explanation": "",
         "clarification_count": 0,
+        "order_info": None,
+        "resume_confirmed": None,
     }
 
     result = await app.ainvoke(initial_state, config={"configurable": {"thread_id": session_id}})
@@ -305,6 +334,7 @@ async def run_shopping_stream(user_input: str, session_id: str = "default") -> A
         {"event": "explanation", "data": {"text": str}}
         {"event": "done", "data": {"latency_ms": float}}
     """
+    set_request_context(generate_request_id(), session_id)
     app = build_shopping_graph()
     start = time.time()
 
@@ -320,6 +350,8 @@ async def run_shopping_stream(user_input: str, session_id: str = "default") -> A
         "ranked_results": [],
         "explanation": "",
         "clarification_count": 0,
+        "order_info": None,
+        "resume_confirmed": None,
     }
 
     async for event in app.astream(initial_state, config={"configurable": {"thread_id": session_id}}):

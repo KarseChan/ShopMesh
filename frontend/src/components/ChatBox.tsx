@@ -1,12 +1,12 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { useChatStream, ChatMessage } from "@/hooks/useChatStream";
+import { useChatStream, ChatMessage, Product } from "@/hooks/useChatStream";
 import ProductCard from "./ProductCard";
 import OrderConfirm from "./OrderConfirm";
 
 export default function ChatBox() {
-  const { messages, isLoading, sendMessage, resumeOrder, pendingOrder } = useChatStream();
+  const { messages, isLoading, sendMessage, startOrder, resumeOrder, pendingOrder } = useChatStream();
   const [input, setInput] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -40,7 +40,7 @@ export default function ChatBox() {
         )}
 
         {messages.map((msg, i) => (
-          <MessageBubble key={i} message={msg} />
+          <MessageBubble key={i} message={msg} onOrder={startOrder} />
         ))}
 
         {isLoading && messages[messages.length - 1]?.role !== "assistant" && (
@@ -60,7 +60,7 @@ export default function ChatBox() {
           productName={(pendingOrder.product_name as string) || "商品"}
           price={(pendingOrder.final_price as number) || 0}
           quantity={(pendingOrder.quantity as number) || 1}
-          onConfirm={() => resumeOrder(true, pendingOrder)}
+          onConfirm={() => resumeOrder(true)}
           onCancel={() => resumeOrder(false)}
         />
       )}
@@ -89,7 +89,7 @@ export default function ChatBox() {
   );
 }
 
-function MessageBubble({ message }: { message: ChatMessage }) {
+function MessageBubble({ message, onOrder }: { message: ChatMessage; onOrder?: (product: Product) => void }) {
   if (message.role === "user") {
     return (
       <div className="flex justify-end">
@@ -121,7 +121,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
             {message.products && message.products.length > 0 && (
               <div className="grid gap-2">
                 {message.products.map((product, i) => (
-                  <ProductCard key={i} product={product} rank={i + 1} />
+                  <ProductCard key={i} product={product} rank={i + 1} onOrder={onOrder} />
                 ))}
               </div>
             )}

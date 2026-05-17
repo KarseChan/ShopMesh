@@ -1,19 +1,18 @@
 """HITL (Human-in-the-Loop) node templates.
 
 Uses LangGraph's native interrupt mechanism:
-1. Graph defines interrupt_before=["order_node"]
-2. When execution reaches the node, LangGraph suspends and persists state via Checkpointer
-3. Frontend displays confirmation UI
-4. User confirms → call graph.invoke(Command(resume={"confirmed": True, ...}), config)
-5. Execution resumes from the suspended node
+1. Node calls interrupt() to pause execution and wait for user input
+2. When resumed via Command(resume=value), interrupt() returns the value
+3. Node uses the value to decide confirm/cancel
 
 This module provides:
-- order_node: places an order after HITL confirmation
-- build_hitl_order_graph: example graph with interrupt_before
+- node_prepare_order: prepares order details
+- node_confirm_order: waits for HITL confirmation via interrupt()
+- build_hitl_order_graph: order subgraph
 """
 
 from langgraph.graph import END, StateGraph
-from langgraph.types import Command
+from langgraph.types import interrupt
 
 from src.graph.checkpointer import get_checkpointer
 from src.graph.state import ShoppingState
@@ -31,7 +30,7 @@ async def node_prepare_order(state: ShoppingState) -> dict:
     """
     ranked = state.get("ranked_results", [])
     if not ranked:
-        return {"explanation": "没有可下单的商品"}
+        return {"explanation": "没有可下单的商品", "order_info": None}
 
     top = ranked[0]
     order_info = {
@@ -44,38 +43,37 @@ async def node_prepare_order(state: ShoppingState) -> dict:
 
     logger.info("order_prepared", product=order_info["product_name"],
                 price=order_info["final_price"])
-    return {"explanation": f"准备下单：{order_info['product_name']} ¥{order_info['final_price']}"}
+    return {
+        "explanation": f"准备下单：{order_info['product_name']} ¥{order_info['final_price']}",
+        "order_info": order_info,
+    }
 
 
 async def node_confirm_order(state: ShoppingState) -> dict:
     """Execute order after HITL confirmation.
 
-    This node is protected by interrupt_before. When resumed:
-    - If user confirmed: creates the order
-    - If user cancelled: returns cancellation message
+    Calls interrupt() to pause execution and wait for user input.
+    When resumed via Command(resume=True/False), interrupt() returns the value.
     """
-    # Check if resumed with confirmation
-    # In LangGraph HITL, the resume payload is available in the state
-    # or via Command(resume=...) which gets merged into state
+    # Pause here and wait for user confirmation
+    confirmed = interrupt("请确认下单")
 
-    explanation = state.get("explanation", "")
+    if not confirmed:
+        logger.info("order_cancelled_by_user")
+        return {"explanation": "订单已取消"}
 
-    # Extract order info from state (set by node_prepare_order)
-    ranked = state.get("ranked_results", [])
-    if not ranked:
+    order_info = state.get("order_info")
+    if not order_info:
         return {"explanation": "订单取消：没有商品信息"}
 
-    top = ranked[0]
     order = create_order(
-        product_id=top.get("product_id", top.get("id", "")),
-        product_name=top.get("name", "商品"),
-        quantity=1,
-        unit_price=top.get("price", 0),
-        final_price=top.get("final_price", top.get("price", 0)),
+        product_id=order_info.get("product_id", ""),
+        product_name=order_info.get("product_name", "商品"),
+        quantity=order_info.get("quantity", 1),
+        unit_price=order_info.get("unit_price", 0),
+        final_price=order_info.get("final_price", 0),
     )
-
-    # Auto-confirm for now (in real flow, this checks the resume payload)
-    confirmed = confirm_order(order["order_id"])
+    confirm_order(order["order_id"])
 
     logger.info("order_placed", order_id=order["order_id"])
     return {"explanation": f"下单成功！订单号：{order['order_id']}"}
@@ -103,7 +101,4 @@ def build_hitl_order_graph():
     graph.add_edge("confirm_order", END)
 
     checkpointer = get_checkpointer("memory")
-    return graph.compile(
-        checkpointer=checkpointer,
-        interrupt_before=["confirm_order"],
-    )
+    return graph.compile(checkpointer=checkpointer)

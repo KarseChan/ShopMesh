@@ -7,24 +7,41 @@ interface Product {
   rank_score?: number;
   promo_desc?: string;
   suggest_message?: string;
+  platform_id?: string;
+  is_abnormal?: boolean;
 }
 
 interface ProductCardProps {
   product: Product;
   rank?: number;
+  onOrder?: (product: Product) => void;
 }
 
-export default function ProductCard({ product, rank }: ProductCardProps) {
+const PLATFORM_NAMES: Record<string, string> = {
+  jd: "京东",
+  tb: "淘宝",
+  pdd: "拼多多",
+};
+
+export default function ProductCard({ product, rank, onOrder }: ProductCardProps) {
   const displayPrice = product.final_price || product.price;
   const hasDiscount = product.final_price && product.final_price < product.price;
+  const platformName = product.platform_id ? PLATFORM_NAMES[product.platform_id] || product.platform_id : "";
 
   return (
     <div className="border rounded-xl p-4 bg-white shadow-sm hover:shadow-md transition-shadow">
-      {rank && (
-        <span className="inline-block bg-blue-100 text-blue-700 text-xs font-semibold px-2 py-1 rounded-full mb-2">
-          #{rank}
-        </span>
-      )}
+      <div className="flex items-center gap-2 mb-2">
+        {rank && (
+          <span className="inline-block bg-blue-100 text-blue-700 text-xs font-semibold px-2 py-1 rounded-full">
+            #{rank}
+          </span>
+        )}
+        {platformName && (
+          <span className="inline-block bg-gray-100 text-gray-600 text-xs px-2 py-0.5 rounded">
+            {platformName}
+          </span>
+        )}
+      </div>
 
       <h3 className="font-semibold text-gray-900 mb-1">{product.name}</h3>
 
@@ -34,6 +51,14 @@ export default function ProductCard({ product, rank }: ProductCardProps) {
           <span className="text-sm text-gray-400 line-through">¥{product.price}</span>
         )}
       </div>
+
+      {product.is_abnormal && (
+        <div className="bg-orange-50 border border-orange-200 rounded px-2 py-1.5 mb-2">
+          <span className="text-orange-700 text-xs font-medium">
+            {"⚠️"} 价格异常 — 实际到手价 ¥{displayPrice}，请注意运费或附加费用
+          </span>
+        </div>
+      )}
 
       {product.promo_desc && (
         <span className="inline-block bg-red-50 text-red-600 text-xs px-2 py-0.5 rounded mb-2">
@@ -58,6 +83,15 @@ export default function ProductCard({ product, rank }: ProductCardProps) {
           </div>
           <span className="text-xs text-gray-500">{Math.round(product.rank_score * 100)}%</span>
         </div>
+      )}
+
+      {onOrder && (
+        <button
+          onClick={() => onOrder(product)}
+          className="mt-3 w-full py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
+        >
+          下单
+        </button>
       )}
     </div>
   );

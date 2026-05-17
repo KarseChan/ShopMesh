@@ -43,3 +43,7 @@ class ShoppingState(TypedDict):
 
     # === Read-write fields ===
     clarification_count: int                 # Clarification Engine increments
+
+    # === HITL order fields ===
+    order_info: dict | None                  # Prepared order details (for interrupt)
+    resume_confirmed: bool | None            # User confirmation from Command(resume=...)

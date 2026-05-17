@@ -27,7 +27,8 @@ export interface UseChatStreamReturn {
   messages: ChatMessage[];
   isLoading: boolean;
   sendMessage: (text: string) => Promise<void>;
-  resumeOrder: (confirmed: boolean, data?: Record<string, unknown>) => Promise<void>;
+  startOrder: (product: Product) => Promise<void>;
+  resumeOrder: (confirmed: boolean) => Promise<void>;
   pendingOrder: Record<string, unknown> | null;
 }
 
@@ -95,6 +96,8 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
                 currentContent = content;
               }, (products) => {
                 currentProducts = products;
+              }, (orderData) => {
+                setPendingOrder(orderData);
               });
             } catch {
               // Skip malformed JSON
@@ -135,6 +138,57 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
     }
   }, [isLoading]);
 
+  const startOrder = useCallback(async (product: Product) => {
+    setIsLoading(true);
+
+    try {
+      const response = await fetch(`${API_BASE}/api/chat/order`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: sessionIdRef.current,
+          product: {
+            product_id: (product as unknown as Record<string, unknown>).product_id || product.name,
+            name: product.name,
+            price: product.price,
+            final_price: product.final_price || product.price,
+          },
+        }),
+      });
+
+      const reader = response.body?.getReader();
+      if (!reader) return;
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        let eventType = "";
+        for (const line of lines) {
+          if (line.startsWith("event: ")) {
+            eventType = line.slice(7);
+          } else if (line.startsWith("data: ")) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (eventType === "interrupt") {
+                setPendingOrder(data);
+              }
+            } catch {}
+          }
+        }
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
   const resumeOrder = useCallback(async (
     confirmed: boolean,
     data?: Record<string, unknown>
@@ -149,7 +203,6 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
         body: JSON.stringify({
           session_id: sessionIdRef.current,
           confirmed,
-          data: data || {},
         }),
       });
 
@@ -168,11 +221,16 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
 
+        let eventType = "";
         for (const line of lines) {
-          if (line.startsWith("data: ")) {
+          if (line.startsWith("event: ")) {
+            eventType = line.slice(7);
+          } else if (line.startsWith("data: ")) {
             try {
               const d = JSON.parse(line.slice(6));
-              if (d.text) resultContent = d.text;
+              if (eventType === "explanation" && d.text) {
+                resultContent = d.text;
+              }
             } catch {}
           }
         }
@@ -189,7 +247,7 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
     }
   }, []);
 
-  return { messages, isLoading, sendMessage, resumeOrder, pendingOrder };
+  return { messages, isLoading, sendMessage, startOrder, resumeOrder, pendingOrder };
 }
 
 function handleSSEEvent(
@@ -197,6 +255,7 @@ function handleSSEEvent(
   data: Record<string, unknown>,
   setContent: (content: string) => void,
   setProducts: (products: Product[]) => void,
+  setPendingOrder: (order: Record<string, unknown> | null) => void,
 ) {
   switch (eventType) {
     case "intent":
@@ -212,7 +271,7 @@ function handleSSEEvent(
       setContent(data.text as string || "");
       break;
     case "interrupt":
-      // HITL: trigger confirmation dialog
+      setPendingOrder(data);
       break;
     case "error":
       setContent(`错误：${data.error || "未知错误"}`);

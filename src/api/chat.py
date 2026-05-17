@@ -2,6 +2,7 @@
 
 Endpoints:
 - POST /api/chat: Send message, receive SSE stream
+- POST /api/chat/order: Start order flow for a product (HITL)
 - POST /api/chat/resume: Resume after HITL interrupt
 
 SSE Events:
@@ -21,7 +22,9 @@ import uuid
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from langgraph.types import Command
 
+from src.graph.hitl_nodes import build_hitl_order_graph
 from src.graph.shopping_graph import run_shopping_stream
 from src.security.input_guard import InputViolation, validate_input
 
@@ -73,39 +76,87 @@ async def chat(request: Request):
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
+@app.post("/api/chat/order")
+async def chat_order(request: Request):
+    """Start order flow for a product (HITL interrupt).
+
+    Request body: {"session_id": str, "product": {product_id, name, price, ...}}
+    Response: SSE stream with interrupt event for confirmation
+    """
+    body = await request.json()
+    session_id = body.get("session_id", str(uuid.uuid4()))
+    product = body.get("product", {})
+
+    # Build initial state with the product as ranked_results
+    initial_state = {
+        "messages": [],
+        "tool_calls": [],
+        "errors": [],
+        "intent": "order",
+        "entities": {},
+        "memory_chunks": [],
+        "search_results": [],
+        "promotion_info": {},
+        "ranked_results": [{
+            "product_id": product.get("product_id", ""),
+            "name": product.get("name", "商品"),
+            "price": product.get("price", 0),
+            "final_price": product.get("final_price", product.get("price", 0)),
+        }],
+        "explanation": "",
+        "clarification_count": 0,
+        "order_info": None,
+        "resume_confirmed": None,
+    }
+
+    async def order_stream():
+        order_app = build_hitl_order_graph()
+        config = {"configurable": {"thread_id": f"order-{session_id}"}}
+
+        order_info = None
+        async for event in order_app.astream(initial_state, config=config):
+            for node_name, node_output in event.items():
+                if node_name == "prepare_order" and isinstance(node_output, dict):
+                    order_info = node_output.get("order_info")
+
+        # Graph paused at interrupt() inside confirm_order
+        yield _sse_event("interrupt", order_info or product)
+        yield _sse_event("done", {"latency_ms": 0})
+
+    return StreamingResponse(order_stream(), media_type="text/event-stream")
+
+
 @app.post("/api/chat/resume")
 async def chat_resume(request: Request):
     """Resume after HITL interrupt.
 
-    Request body: {"session_id": str, "confirmed": bool, "data": dict?}
+    Request body: {"session_id": str, "confirmed": bool}
     Response: SSE stream continuing from checkpoint
     """
     body = await request.json()
     session_id = body.get("session_id", "")
     confirmed = body.get("confirmed", False)
 
-    if not confirmed:
-        async def cancel_stream():
-            yield _sse_event("explanation", {"text": "订单已取消"})
-            yield _sse_event("done", {"latency_ms": 0})
-        return StreamingResponse(cancel_stream(), media_type="text/event-stream")
-
-    # For confirmed orders, simulate order placement
-    from src.skills.order_skill import create_order, confirm_order
-
     async def resume_stream():
-        # In a real implementation, this would resume from the LangGraph checkpoint
-        # For MVP, we directly place the order
-        order_data = body.get("data", {})
-        order = create_order(
-            product_id=order_data.get("product_id", ""),
-            product_name=order_data.get("product_name", "商品"),
-            quantity=order_data.get("quantity", 1),
-            unit_price=order_data.get("unit_price", 0),
-            final_price=order_data.get("final_price", 0),
-        )
-        confirmed_order = confirm_order(order["order_id"])
-        yield _sse_event("explanation", {"text": f"下单成功！订单号：{confirmed_order['order_id']}"})
+        order_app = build_hitl_order_graph()
+        config = {"configurable": {"thread_id": f"order-{session_id}"}}
+
+        # Check if there's a pending interrupt checkpoint
+        state = await order_app.aget_state(config)
+        if state.next:
+            # Resume from LangGraph checkpoint
+            try:
+                async for event in order_app.astream(
+                    Command(resume=confirmed), config=config,
+                ):
+                    for node_name, node_output in event.items():
+                        if isinstance(node_output, dict) and "explanation" in node_output:
+                            yield _sse_event("explanation", {"text": node_output["explanation"]})
+            except Exception as e:
+                yield _sse_event("error", {"error": str(e), "severity": "high"})
+        else:
+            yield _sse_event("explanation", {"text": "没有待处理的订单"})
+
         yield _sse_event("done", {"latency_ms": 0})
 
     return StreamingResponse(resume_stream(), media_type="text/event-stream")

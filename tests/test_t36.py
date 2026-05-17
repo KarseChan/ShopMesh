@@ -85,11 +85,20 @@ def test_chat_normal_flow(mock_stream):
 
 
 def test_chat_resume_cancel():
-    """Cancel should return cancellation message."""
+    """Cancel after order interrupt should return cancellation message."""
     from fastapi.testclient import TestClient
     client = TestClient(app)
+    sid = "test-cancel"
+
+    # Start order flow (creates interrupt checkpoint)
+    client.post("/api/chat/order", json={
+        "session_id": sid,
+        "product": {"product_id": "p1", "name": "奶茶", "price": 15, "final_price": 15},
+    })
+
+    # Resume with cancel
     response = client.post("/api/chat/resume", json={
-        "session_id": "test",
+        "session_id": sid,
         "confirmed": False,
     })
     assert response.status_code == 200
@@ -97,24 +106,38 @@ def test_chat_resume_cancel():
 
 
 def test_chat_resume_confirm():
-    """Confirm should create order."""
+    """Confirm after order interrupt should create order."""
     from fastapi.testclient import TestClient
     from src.skills.order_skill import clear_orders
     clear_orders()
 
     client = TestClient(app)
+    sid = "test-confirm"
+
+    # Start order flow (creates interrupt checkpoint)
+    client.post("/api/chat/order", json={
+        "session_id": sid,
+        "product": {"product_id": "p1", "name": "奶茶", "price": 15, "final_price": 15},
+    })
+
+    # Resume with confirm
     response = client.post("/api/chat/resume", json={
-        "session_id": "test",
+        "session_id": sid,
         "confirmed": True,
-        "data": {
-            "product_id": "p1",
-            "product_name": "奶茶",
-            "quantity": 1,
-            "unit_price": 15,
-            "final_price": 15,
-        },
     })
     assert response.status_code == 200
     assert "下单成功" in response.text
 
     clear_orders()
+
+
+def test_chat_resume_no_checkpoint():
+    """Resume without prior order should return no pending order."""
+    from fastapi.testclient import TestClient
+    client = TestClient(app)
+    response = client.post("/api/chat/resume", json={
+        "session_id": "nonexistent",
+        "confirmed": True,
+    })
+    assert response.status_code == 200
+    assert "没有待处理的订单" in response.text

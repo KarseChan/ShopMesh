@@ -1,7 +1,7 @@
 """T3.4 Order Skill + HITL tests."""
 
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 from src.skills.order_skill import (
     create_order, get_order, confirm_order, cancel_order,
@@ -134,21 +134,32 @@ async def test_node_prepare_order_empty():
 @pytest.mark.asyncio
 async def test_node_confirm_order():
     state = {
-        "ranked_results": [
-            {"product_id": "p1", "name": "奶茶", "price": 15, "final_price": 15},
-        ],
+        "order_info": {"product_id": "p1", "product_name": "奶茶", "quantity": 1, "unit_price": 15, "final_price": 15},
         "explanation": "",
     }
-    result = await node_confirm_order(state)
+    with patch("src.graph.hitl_nodes.interrupt", return_value=True):
+        result = await node_confirm_order(state)
     assert "下单成功" in result["explanation"]
     assert "ORD-" in result["explanation"]
 
 
 @pytest.mark.asyncio
-async def test_node_confirm_order_empty():
-    state = {"ranked_results": [], "explanation": ""}
-    result = await node_confirm_order(state)
+async def test_node_confirm_order_cancelled():
+    state = {
+        "order_info": {"product_id": "p1", "product_name": "奶茶", "quantity": 1, "unit_price": 15, "final_price": 15},
+        "explanation": "",
+    }
+    with patch("src.graph.hitl_nodes.interrupt", return_value=False):
+        result = await node_confirm_order(state)
     assert "取消" in result["explanation"]
+
+
+@pytest.mark.asyncio
+async def test_node_confirm_order_empty():
+    state = {"order_info": None, "explanation": ""}
+    with patch("src.graph.hitl_nodes.interrupt", return_value=True):
+        result = await node_confirm_order(state)
+    assert "没有商品" in result["explanation"]
 
 
 # === HITL Graph ===
