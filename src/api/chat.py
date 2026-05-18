@@ -25,6 +25,7 @@ from fastapi.responses import StreamingResponse
 from langgraph.types import Command
 
 from src.graph.hitl_nodes import build_hitl_order_graph
+from src.graph.shopping_agent import run_agent_stream
 from src.graph.shopping_graph import run_shopping_stream
 from src.security.input_guard import InputViolation, validate_input
 
@@ -47,12 +48,14 @@ def _sse_event(event: str, data: dict) -> str:
 async def chat(request: Request):
     """Send a message and receive SSE stream of shopping results.
 
-    Request body: {"message": str, "session_id": str?}
-    Response: SSE stream
+    Request body: {"message": str, "session_id": str?, "mode": "agent"|"workflow"?}
+    mode defaults to "agent" (hybrid Agent graph).
+    mode="workflow" uses the original shopping_graph pipeline.
     """
     body = await request.json()
     message = body.get("message", "")
     session_id = body.get("session_id", str(uuid.uuid4()))
+    mode = body.get("mode", "agent")
 
     # Input validation
     try:
@@ -66,10 +69,16 @@ async def chat(request: Request):
 
     async def event_stream():
         try:
-            async for event in run_shopping_stream(message, session_id=session_id):
-                etype = event.get("event", "unknown")
-                data = event.get("data", {})
-                yield _sse_event(etype, data)
+            if mode == "workflow":
+                async for event in run_shopping_stream(message, session_id=session_id):
+                    etype = event.get("event", "unknown")
+                    data = event.get("data", {})
+                    yield _sse_event(etype, data)
+            else:
+                async for event in run_agent_stream(message, user_id=session_id, thread_id=f"agent-{session_id}"):
+                    etype = event.get("event", "unknown")
+                    data = event.get("data", {})
+                    yield _sse_event(etype, data)
         except Exception as e:
             yield _sse_event("error", {"error": str(e), "severity": "high"})
 
