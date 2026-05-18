@@ -7,10 +7,24 @@ export interface SSEEvent {
   data: Record<string, unknown>;
 }
 
+export interface ClarificationQuestion {
+  field: string | null;
+  question: string;
+  options: string[];
+}
+
+export interface ToolCall {
+  tool: string;
+  args: Record<string, unknown>;
+}
+
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   products?: Product[];
+  options?: string[];
+  questions?: ClarificationQuestion[];
+  toolCalls?: ToolCall[];
   isLoading?: boolean;
 }
 
@@ -26,7 +40,7 @@ export interface Product {
 export interface UseChatStreamReturn {
   messages: ChatMessage[];
   isLoading: boolean;
-  sendMessage: (text: string) => Promise<void>;
+  sendMessage: (text: string, displayText?: string) => Promise<void>;
   startOrder: (product: Product) => Promise<void>;
   resumeOrder: (confirmed: boolean) => Promise<void>;
   pendingOrder: Record<string, unknown> | null;
@@ -40,11 +54,11 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
   const [pendingOrder, setPendingOrder] = useState<Record<string, unknown> | null>(null);
   const sessionIdRef = useRef(sessionId || crypto.randomUUID());
 
-  const sendMessage = useCallback(async (text: string) => {
+  const sendMessage = useCallback(async (text: string, displayText?: string) => {
     if (!text.trim() || isLoading) return;
 
-    // Add user message
-    const userMsg: ChatMessage = { role: "user", content: text };
+    // Add user message (show displayText if provided, otherwise raw text)
+    const userMsg: ChatMessage = { role: "user", content: displayText || text };
     setMessages((prev) => [...prev, userMsg]);
 
     // Add loading placeholder
@@ -73,6 +87,9 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
       let buffer = "";
       let currentContent = "";
       let currentProducts: Product[] = [];
+      let currentOptions: string[] = [];
+      let currentQuestions: ClarificationQuestion[] = [];
+      let currentToolCalls: ToolCall[] = [];
 
       while (true) {
         const { done, value } = await reader.read();
@@ -98,6 +115,12 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
                 currentProducts = products;
               }, (orderData) => {
                 setPendingOrder(orderData);
+              }, (opts) => {
+                currentOptions = opts;
+              }, (qs) => {
+                currentQuestions = qs;
+              }, (tc) => {
+                currentToolCalls = [...currentToolCalls, tc];
               });
             } catch {
               // Skip malformed JSON
@@ -114,6 +137,9 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
               ...last,
               content: currentContent || last.content,
               products: currentProducts.length > 0 ? currentProducts : last.products,
+              options: currentOptions.length > 0 ? currentOptions : last.options,
+              questions: currentQuestions.length > 0 ? currentQuestions : last.questions,
+              toolCalls: currentToolCalls.length > 0 ? currentToolCalls : last.toolCalls,
               isLoading: false,
             };
           }
@@ -256,19 +282,30 @@ function handleSSEEvent(
   setContent: (content: string) => void,
   setProducts: (products: Product[]) => void,
   setPendingOrder: (order: Record<string, unknown> | null) => void,
+  setOptions: (options: string[]) => void,
+  setQuestions: (questions: ClarificationQuestion[]) => void,
+  addToolCall?: (tc: ToolCall) => void,
 ) {
   switch (eventType) {
     case "intent":
-      // Could show intent indicator in UI
+      break;
+    case "tool_call":
+      if (addToolCall) {
+        addToolCall({ tool: data.tool as string || "", args: (data.args as Record<string, unknown>) || {} });
+      }
       break;
     case "clarification":
       setContent(data.question as string || data.explanation as string || "");
+      setOptions((data.options as string[]) || []);
+      setQuestions((data.questions as ClarificationQuestion[]) || []);
       break;
     case "results":
       setProducts((data.products as Product[]) || []);
       break;
     case "explanation":
       setContent(data.text as string || "");
+      setOptions([]);
+      setQuestions([]);
       break;
     case "interrupt":
       setPendingOrder(data);

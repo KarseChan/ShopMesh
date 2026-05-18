@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { useChatStream, ChatMessage, Product } from "@/hooks/useChatStream";
+import { useChatStream, ChatMessage, Product, ClarificationQuestion, ToolCall } from "@/hooks/useChatStream";
 import ProductCard from "./ProductCard";
 import OrderConfirm from "./OrderConfirm";
 
@@ -40,7 +40,7 @@ export default function ChatBox() {
         )}
 
         {messages.map((msg, i) => (
-          <MessageBubble key={i} message={msg} onOrder={startOrder} />
+          <MessageBubble key={i} message={msg} onOrder={startOrder} onOptionClick={sendMessage} />
         ))}
 
         {isLoading && messages[messages.length - 1]?.role !== "assistant" && (
@@ -89,7 +89,7 @@ export default function ChatBox() {
   );
 }
 
-function MessageBubble({ message, onOrder }: { message: ChatMessage; onOrder?: (product: Product) => void }) {
+function MessageBubble({ message, onOrder, onOptionClick }: { message: ChatMessage; onOrder?: (product: Product) => void; onOptionClick?: (text: string, displayText?: string) => void }) {
   if (message.role === "user") {
     return (
       <div className="flex justify-end">
@@ -113,6 +113,9 @@ function MessageBubble({ message, onOrder }: { message: ChatMessage; onOrder?: (
           </div>
         ) : (
           <>
+            {message.toolCalls && message.toolCalls.length > 0 && (
+              <ToolCallBubble toolCalls={message.toolCalls} />
+            )}
             {message.content && (
               <div className="bg-gray-100 px-4 py-3 rounded-2xl rounded-bl-sm whitespace-pre-wrap text-sm leading-relaxed">
                 {message.content}
@@ -125,7 +128,164 @@ function MessageBubble({ message, onOrder }: { message: ChatMessage; onOrder?: (
                 ))}
               </div>
             )}
+            {message.questions && message.questions.length > 0 && onOptionClick ? (
+              <ClarificationForm questions={message.questions} onSubmit={onOptionClick} />
+            ) : message.options && message.options.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {message.options.map((opt, i) => (
+                  <button
+                    key={i}
+                    onClick={() => onOptionClick?.(opt)}
+                    className="px-3 py-1.5 border border-blue-300 text-blue-600 text-sm rounded-full hover:bg-blue-50 transition-colors"
+                  >
+                    {opt}
+                  </button>
+                ))}
+              </div>
+            )}
           </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ToolCallBubble({ toolCalls }: { toolCalls: ToolCall[] }) {
+  const [expanded, setExpanded] = useState(false);
+
+  const TOOL_LABELS: Record<string, string> = {
+    product_search: "商品检索",
+    product_detail_batch: "商品详情",
+    price_compare: "价格对比",
+    review_summary: "评论摘要",
+    constraint_relaxation: "放宽条件",
+    ask_clarification: "追问确认",
+  };
+
+  return (
+    <div className="border border-gray-200 rounded-lg overflow-hidden text-xs">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full px-3 py-2 bg-gray-50 flex items-center justify-between text-gray-500 hover:bg-gray-100 transition-colors"
+      >
+        <span>
+          Agent 调用了 {toolCalls.length} 个工具
+        </span>
+        <span className="text-gray-400">{expanded ? "收起" : "展开"}</span>
+      </button>
+      {expanded && (
+        <div className="px-3 py-2 space-y-1.5">
+          {toolCalls.map((tc, i) => (
+            <div key={i} className="flex items-start gap-2">
+              <span className="text-blue-500 font-mono">{i + 1}.</span>
+              <div>
+                <span className="font-medium text-gray-700">
+                  {TOOL_LABELS[tc.tool] || tc.tool}
+                </span>
+                {Object.keys(tc.args).length > 0 && (
+                  <span className="text-gray-400 ml-1">
+                    ({Object.entries(tc.args).slice(0, 2).map(([k, v]) => `${k}=${typeof v === "string" ? v.slice(0, 20) : v}`).join(", ")})
+                  </span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ClarificationForm({ questions, onSubmit }: { questions: ClarificationQuestion[]; onSubmit: (json: string, displayText?: string) => void }) {
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [step, setStep] = useState(0);
+
+  const current = questions[step];
+  const total = questions.length;
+  const allAnswered = questions.every((q) => q.field === null || answers[q.field]);
+
+  const handleSelect = (option: string) => {
+    if (!current.field) return;
+    setAnswers((prev) => ({ ...prev, [current.field!]: option }));
+  };
+
+  const handleNext = () => {
+    if (step < total - 1) setStep(step + 1);
+  };
+
+  const handlePrev = () => {
+    if (step > 0) setStep(step - 1);
+  };
+
+  const handleSubmit = () => {
+    // Build friendly display text from selected options
+    const displayParts = questions
+      .filter((q) => q.field && answers[q.field])
+      .map((q) => answers[q.field!]);
+    const displayText = displayParts.join("，");
+    onSubmit(JSON.stringify(answers), displayText);
+  };
+
+  return (
+    <div className="bg-white border rounded-xl p-4 space-y-4 shadow-sm">
+      <div className="text-xs text-gray-400">
+        {step + 1}/{total} {Object.keys(answers).length > 0 && `· 已选 ${Object.keys(answers).length} 项`}
+      </div>
+
+      <div>
+        <p className="text-sm font-medium text-gray-800 mb-3">{current.question}</p>
+        {current.options.length > 0 ? (
+          <div className="flex flex-wrap gap-2">
+            {current.options.map((opt, i) => (
+              <button
+                key={i}
+                onClick={() => handleSelect(opt)}
+                className={`px-3 py-1.5 text-sm rounded-full border transition-colors ${
+                  answers[current.field!] === opt
+                    ? "bg-blue-600 text-white border-blue-600"
+                    : "border-blue-300 text-blue-600 hover:bg-blue-50"
+                }`}
+              >
+                {opt}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <p className="text-xs text-gray-400">请在下方输入框回答</p>
+        )}
+      </div>
+
+      {/* 已选摘要 */}
+      {Object.keys(answers).length > 0 && (
+        <div className="text-xs text-gray-500">
+          {Object.entries(answers).map(([k, v]) => (
+            <span key={k} className="mr-2">✓ {v}</span>
+          ))}
+        </div>
+      )}
+
+      <div className="flex gap-2">
+        {step > 0 && (
+          <button onClick={handlePrev} className="px-3 py-1.5 text-sm text-gray-500 hover:text-gray-700">
+            上一题
+          </button>
+        )}
+        {step < total - 1 ? (
+          <button
+            onClick={handleNext}
+            disabled={!current.field || !answers[current.field]}
+            className="ml-auto px-4 py-1.5 text-sm bg-blue-600 text-white rounded-lg disabled:opacity-50"
+          >
+            下一题
+          </button>
+        ) : (
+          <button
+            onClick={handleSubmit}
+            disabled={!allAnswered}
+            className="ml-auto px-4 py-1.5 text-sm bg-green-600 text-white rounded-lg disabled:opacity-50"
+          >
+            确认
+          </button>
         )}
       </div>
     </div>
