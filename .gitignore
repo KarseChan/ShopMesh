@@ -34,5 +34,11 @@ docker/
 .DS_Store
 Thumbs.db
 
+# Next.js
+.next/
+frontend/.next/
+frontend/node_modules/
+frontend/package-lock.json
+
 # Claude Code
 .claude/
