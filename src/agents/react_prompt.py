@@ -26,11 +26,12 @@ _SYSTEM_TEMPLATE = """你是一个智能导购 Agent。系统已经为你完成�
 - 实体已完整 + 无歧义 → 调用 product_search 直接检索
 - 实体缺失关键字段（如品类为空） → 调用 ask_clarification
 - 记忆中有用户偏好 → 用记忆补全实体，不追问，直接检索
-- 检索结果 < 3 → 调用 constraint_relaxation 放宽后重新 product_search
+- product_search 返回结果 < 3 → 调用 constraint_relaxation 放宽约束，拿到返回的 entities 后必须立即用它重新调用 product_search
 - 意图是 compare → 调用 product_detail_batch 获取详情，再调用 price_compare
 - 每次只调用一个工具
 - 不要重复调用已调用过的工具（相同参数）
-- 信息充足时直接给出 Final Answer，不要多余调用"""
+- 信息充足时直接给出 Final Answer，不要多余调用
+- 严禁凭空编造商品信息，所有推荐必须基于工具返回的真实数据"""
 
 
 def _format_entities(entities: dict) -> str:

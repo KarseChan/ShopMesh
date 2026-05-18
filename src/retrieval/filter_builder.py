@@ -4,7 +4,39 @@ Transforms the output of entity extraction into Qdrant-native filters
 for one-step hybrid retrieval (Payload pre-filtering during HNSW traversal).
 """
 
-from qdrant_client.models import FieldCondition, Filter, MatchAny, MatchValue, Range
+from qdrant_client.models import FieldCondition, Filter, MatchAny, MatchValue, MatchText, Range
+
+from src.tools.search_tool import load_products
+
+# Cache for available categories
+_CATEGORIES_CACHE: list[str] | None = None
+
+
+def _get_all_categories() -> list[str]:
+    """Get all unique categories from product data."""
+    global _CATEGORIES_CACHE
+    if _CATEGORIES_CACHE is None:
+        products = load_products()
+        _CATEGORIES_CACHE = list({p["category"] for p in products if p.get("category")})
+    return _CATEGORIES_CACHE
+
+
+def _expand_category(category: str) -> list[str]:
+    """Expand a category prefix to all matching full categories.
+
+    Examples:
+        "服饰" → ["男装/上装/T恤衬衫", "男装/下装/裤装", "女装/上装/衬衫外套", ...]
+        "男装" → ["男装/上装/T恤衬衫", "男装/下装/裤装", ...]
+        "男装/上装" → ["男装/上装/T恤衬衫", "男装/上装/外套", ...]
+        "男装/上装/T恤衬衫" → ["男装/上装/T恤衬衫"] (exact)
+    """
+    all_cats = _get_all_categories()
+    # Exact match first
+    if category in all_cats:
+        return [category]
+    # Prefix match
+    matched = [c for c in all_cats if c.startswith(category)]
+    return matched if matched else [category]  # fallback to original if no match
 
 
 def build_filter(entities: dict) -> Filter | None:
@@ -19,12 +51,22 @@ def build_filter(entities: dict) -> Filter | None:
     """
     conditions = []
 
-    # Category filter (exact match)
+    # Category filter: prefix match for hierarchical categories
+    # e.g., "男装" matches "男装/上装/T恤衬衫", "男装/下装/裤装"
+    # e.g., "男装/上装" matches "男装/上装/T恤衬衫"
     category = entities.get("category")
     if category:
-        conditions.append(FieldCondition(
-            key="category", match=MatchValue(value=category)
-        ))
+        # Use MatchText for prefix-like matching on category field
+        # MatchText does full-text match, but we can use MatchAny with expanded categories
+        expanded = _expand_category(category)
+        if len(expanded) > 1:
+            conditions.append(FieldCondition(
+                key="category", match=MatchAny(any=expanded)
+            ))
+        elif expanded:
+            conditions.append(FieldCondition(
+                key="category", match=MatchValue(value=expanded[0])
+            ))
 
     # Brand filter (exact match on brand field)
     brand = entities.get("brand")

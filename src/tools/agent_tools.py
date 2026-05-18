@@ -91,7 +91,8 @@ async def ask_clarification(entities: dict, asked_fields: list[str]) -> dict:
 tool_registry.register(ToolDef(
     name="constraint_relaxation",
     description="放宽检索约束，返回放宽后的实体。"
-                "在检索结果过少时调用，逐步去掉品牌→价格→场景等限制。",
+                "在检索结果过少时调用，逐步去掉品牌→价格→场景等限制。"
+                "重要：拿到返回的 entities 后，必须立即用它重新调用 product_search。",
     parameters={
         "type": "object",
         "properties": {
