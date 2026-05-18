@@ -1,0 +1,40 @@
+"""AgentState definition for the hybrid Agent graph.
+
+Design principles:
+1. Deterministic preprocessing writes: intent, entities, memory_chunks
+2. ReAct Agent writes: search_results, tool_calls_log, iteration, final_response
+3. Postprocessing reads: final_response, entities, user_id
+4. Reducer fields use Annotated[list, add] for parallel-safe append
+"""
+
+from typing import Annotated, TypedDict
+
+from langgraph.graph import add_messages
+
+
+def _add_lists(left: list, right: list) -> list:
+    """Reducer: concatenate two lists (for parallel-safe append)."""
+    return left + right
+
+
+class AgentState(TypedDict):
+    """State for the hybrid Agent graph (preprocess → react → postprocess)."""
+
+    # === Dialog ===
+    messages: Annotated[list, add_messages]   # Dialog history
+    user_id: str                               # User ID
+
+    # === Deterministic preprocessing output ===
+    intent: str                                # Intent classification result
+    entities: dict                              # Extracted entities
+    memory_chunks: list                         # Recalled memory chunks
+
+    # === ReAct Agent dynamic decision ===
+    search_results: list                        # Retrieval results
+    user_profile: dict                          # User profile (inferred from memory)
+    tool_calls_log: Annotated[list, _add_lists] # Tool call observation log
+    iteration: int                              # ReAct loop iteration count
+    max_iterations: int                         # Max iterations (default 5)
+    final_response: str | None                  # Final response (termination signal)
+    asked_fields: list                          # Fields already asked about
+    used_fallback: bool                         # Whether fallback path was used
