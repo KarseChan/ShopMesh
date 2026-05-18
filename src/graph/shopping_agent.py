@@ -92,7 +92,7 @@ async def run_agent_stream(
         {"event": str, "data": dict}
     """
     request_id = generate_request_id()
-    set_request_context(request_id=request_id, user_id=user_id)
+    set_request_context(request_id=request_id, session_id=user_id)
 
     graph = build_shopping_agent_graph()
     tid = thread_id or f"agent_{user_id}_{uuid.uuid4().hex[:8]}"
