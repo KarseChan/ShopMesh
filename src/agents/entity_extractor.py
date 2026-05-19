@@ -4,6 +4,7 @@ Output schema:
 {
     "category": "大品类 or null",
     "product_type": "具体商品词 or null",
+    "gender": "男/女 or null",
     "price_min": 数字 or null,
     "price_max": 数字 or null,
     "brand": "品牌 or null",
@@ -27,6 +28,7 @@ SYSTEM_PROMPT = (
     "{\n"
     '  "category": "大品类或null",\n'
     '  "product_type": "具体商品词或null",\n'
+    '  "gender": "男/女或null",\n'
     '  "price_min": 数字或null,\n'
     '  "price_max": 数字或null,\n'
     '  "brand": "品牌或null",\n'
@@ -40,6 +42,7 @@ SYSTEM_PROMPT = (
     "}\n"
     "品类只限：护肤、奶茶、数码、服饰、食品、家居、母婴、运动\n"
     "product_type：用户提到的具体商品词，如'衬衫'、'T恤'、'外套'、'裤装'、'面膜'等。提取原词，不要改写。\n"
+    "gender：用户明确提到的性别，如'男士'→'男'、'女生'→'女'、'男款'→'男'、'女款'→'女'。未提及则为null。\n"
     "preference：用户对商品品质的偏好描述，如'口碑好'、'销量高'、'大牌'、'便宜'、'轻薄'等。提取原词，不要改写。\n"
     "skin_type/concerns：仅当品类是护肤时才提取，其他品类设为null。\n"
     "歧义标记：当实体含义不确定时设为 true（如'苹果'可能是水果或手机），"
@@ -66,6 +69,7 @@ async def extract_entities(query: str) -> dict:
         entities = {
             "category": result.get("category"),
             "product_type": result.get("product_type"),
+            "gender": result.get("gender"),
             "price_min": result.get("price_min"),
             "price_max": result.get("price_max"),
             "brand": result.get("brand"),
@@ -85,6 +89,7 @@ async def extract_entities(query: str) -> dict:
         return {
             "category": None,
             "product_type": None,
+            "gender": None,
             "price_min": None,
             "price_max": None,
             "brand": None,

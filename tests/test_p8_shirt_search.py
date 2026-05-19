@@ -23,6 +23,36 @@ async def test_category_expand_with_product_type():
 
 
 @pytest.mark.asyncio
+async def test_category_expand_with_gender_male():
+    """filter_builder 展开 "服饰"+"衬衫"+gender="男" → 仅男装上装。"""
+    from src.retrieval.filter_builder import _expand_category
+
+    result = _expand_category("服饰", "衬衫", gender="男")
+    assert result == ["男装/上装"]
+    assert "女装/上装" not in result
+
+
+@pytest.mark.asyncio
+async def test_category_expand_with_gender_female():
+    """filter_builder 展开 "服饰"+"衬衫"+gender="女" → 仅女装上装。"""
+    from src.retrieval.filter_builder import _expand_category
+
+    result = _expand_category("服饰", "衬衫", gender="女")
+    assert result == ["女装/上装"]
+    assert "男装/上装" not in result
+
+
+@pytest.mark.asyncio
+async def test_category_expand_broad_with_gender():
+    """filter_builder 展开 "服饰"+gender="男" → 仅男装品类。"""
+    from src.retrieval.filter_builder import _expand_category
+
+    result = _expand_category("服饰", None, gender="男")
+    assert all(c.startswith("男装/") for c in result)
+    assert len(result) >= 2
+
+
+@pytest.mark.asyncio
 async def test_category_expand_broad_only():
     """filter_builder 展开 "服饰" (无 product_type) → 全部服饰品类。"""
     from src.retrieval.filter_builder import _expand_category

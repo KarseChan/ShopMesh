@@ -442,3 +442,55 @@ matched = [by_id[pid] for pid in product_ids if pid in by_id]
 - `src/tools/review_tool.py` — `review_summary()`
 
 **状态**: 已修复
+
+---
+
+## P14: Entity Extractor 缺少 gender 字段，无法区分男装/女装（已修复）
+
+**发现时间**: 2026-05-19
+
+**现象**: 用户提问"有没有适合夏天穿、不容易皱的男士衬衫"，entity extractor 输出：
+
+```json
+{
+  "category": "服饰",
+  "product_type": "衬衫",
+  "scenario": "夏天",
+  "preference": "不容易皱"
+}
+```
+
+缺少 `gender: "男"`。导致 `_expand_category("服饰", "衬衫")` 返回 `["男装/上装", "女装/上装"]`，同时召回男装和女装衬衫。
+
+**根因**: entity_extractor SYSTEM_PROMPT 没有 `gender` 字段定义，LLM 不会提取"男士/女士/男款/女款"等性别信息。
+
+**解决方案**: 三层修改。
+
+### 1. src/agents/entity_extractor.py — 新增 gender 字段
+
+- SYSTEM_PROMPT 新增 `"gender": "男/女或null"` 字段定义
+- 引导 LLM 提取"男士"→"男"、"女生"→"女"、"男款"→"男"等
+- normalize 和 fallback 均包含 gender
+
+### 2. src/retrieval/filter_builder.py — _expand_category 增加 gender 参数
+
+- `_expand_category(category, product_type, gender)` 改为三参数
+- 当 `gender="男"` 时，过滤结果只保留 `"男装/..."` 前缀的品类
+- 当 `gender="女"` 时，过滤结果只保留 `"女装/..."` 前缀的品类
+- `build_filter()` 从 entities 读取 gender 传入
+
+### 3. src/retrieval/hybrid_retriever.py — 日志增加 gender
+
+- `filter_built` 日志新增 `gender` 字段
+- `_expand_category` 调用传入 gender
+
+**修复后效果**:
+
+```
+用户: "有没有适合夏天穿、不容易皱的男士衬衫"
+→ entities: {category: "服饰", product_type: "衬衫", gender: "男", ...}
+→ _expand_category("服饰", "衬衫", "男") → ["男装/上装"]
+→ 只召回男装衬衫，不再混入女装
+```
+
+**状态**: 已修复

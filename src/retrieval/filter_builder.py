@@ -54,24 +54,37 @@ def _get_all_categories() -> list[str]:
     return _CATEGORIES_CACHE
 
 
-def _expand_category(category: str | None, product_type: str | None = None) -> list[str]:
+def _expand_category(
+    category: str | None,
+    product_type: str | None = None,
+    gender: str | None = None,
+) -> list[str]:
     """Expand a category to all matching full categories.
 
     Expansion priority:
-    1. product_type → direct mapping (e.g., "衬衫" → ["男装/上装/T恤衬衫", ...])
+    1. product_type → direct mapping (e.g., "衬衫" → ["男装/上装", "女装/上装"])
     2. category → broad prefix map (e.g., "服饰" → ["男装/", "女装/"])
     3. category → prefix match on actual categories
     4. category → exact match
     5. Fallback to original
 
+    Gender filter: if gender is "男", filter to only "男装/..." categories;
+    if "女", filter to only "女装/..." categories.
+
     Examples:
-        ("服饰", "衬衫") → ["男装/上装/T恤衬衫", "女装/上装/衬衫外套"]
-        ("服饰", None) → ["男装/上装/T恤衬衫", "男装/下装/裤装", ...]
-        ("男装", None) → ["男装/上装/T恤衬衫", "男装/下装/裤装", ...]
-        (None, "衬衫") → ["男装/上装/T恤衬衫", "女装/上装/衬衫外套"]
+        ("服饰", "衬衫", "男") → ["男装/上装"]
+        ("服饰", "衬衫", None) → ["男装/上装", "女装/上装"]
+        ("服饰", None, "男") → ["男装/上装", "男装/下装"]
     """
     all_cats = _get_all_categories()
     candidates = []
+
+    # Gender prefix filter
+    gender_prefix = None
+    if gender == "男":
+        gender_prefix = "男装/"
+    elif gender == "女":
+        gender_prefix = "女装/"
 
     # 1. product_type direct mapping (most precise, highest priority)
     if product_type and product_type in _PRODUCT_TYPE_MAP:
@@ -94,6 +107,12 @@ def _expand_category(category: str | None, product_type: str | None = None) -> l
     if category and not candidates and category in all_cats:
         candidates.append(category)
 
+    # Apply gender filter: narrow to matching gender prefix
+    if gender_prefix and candidates:
+        gender_filtered = [c for c in candidates if c.startswith(gender_prefix)]
+        if gender_filtered:
+            candidates = gender_filtered
+
     # Deduplicate preserving order
     return list(dict.fromkeys(candidates)) if candidates else ([category] if category else [])
 
@@ -114,8 +133,9 @@ def build_filter(entities: dict) -> Filter | None:
     # e.g., ("服饰", "衬衫") → MatchAny(["男装/上装/T恤衬衫", "女装/上装/衬衫外套"])
     category = entities.get("category")
     product_type = entities.get("product_type")
+    gender = entities.get("gender")
     if category or product_type:
-        expanded = _expand_category(category, product_type)
+        expanded = _expand_category(category, product_type, gender)
         if len(expanded) > 1:
             conditions.append(FieldCondition(
                 key="category", match=MatchAny(any=expanded)
