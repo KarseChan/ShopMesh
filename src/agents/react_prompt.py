@@ -11,6 +11,7 @@ _SYSTEM_TEMPLATE = """你是一个智能导购 Agent。系统已经为你完成�
 用户意图：{intent}（置信度 {confidence}）
 提取的实体：{entities}
 用户历史记忆：{memory_summary}
+检索计划：{search_plan}
 
 你可以调用以下工具来完成后续决策：
 
@@ -22,18 +23,45 @@ _SYSTEM_TEMPLATE = """你是一个智能导购 Agent。系统已经为你完成�
 3. Observation: 观察工具返回结果
 4. 重复直到信息充足，然后给出 Final Answer
 
-决策规则：
-- 实体已完整 + 无歧义 → 调用 product_search 直接检索
-- 实体缺失关键字段（如品类为空） → 调用 ask_clarification
-- 记忆中有用户偏好 → 用记忆补全实体，不追问，直接检索
-- product_search 返回结果 < 3 → 调用 constraint_relaxation 放宽约束，拿到返回的 entities 后必须立即用它重新调用 product_search
-- 意图是 compare → 调用 product_detail_batch 获取详情，再调用 price_compare
+决策规则（按优先级）：
+1. 实体有 missing_critical_fields → 先调用 ask_clarification，根据返回的 strategy 决定：
+   - strategy=ask → 向用户追问。根据返回的 question_spec 生成自然追问文本：
+     * question_spec.must_ask: 必须问的字段
+     * question_spec.context: 场景上下文（如"面试"），融入追问文本
+     * question_spec.suggestions: 建议选项（如 product_type: ["衬衫","西装外套"]），引导用户选择
+     * 追问文本要自然流畅，不要机械罗列字段名，例如"你想看男装还是女装？面试的话，我建议优先看衬衫或西装外套。"
+   - strategy=light_ask → 轻量追问，用户可跳过，语气更随意
+   - strategy=assume → 不追问，用 assumptions 补全实体，在回复中声明假设
+2. 检索计划 search_mode=outfit_multi_query → 调用 multi_query_search，传入 search_requests 和 entities
+3. 检索计划 search_mode=single 或无检索计划 → 调用 product_search 直接检索
+4. 记忆中有用户偏好 → 用记忆补全实体，不追问，直接检索
+5. product_search 返回结果 < 3 → 调用 constraint_relaxation 放宽约束，拿到返回的 entities 后必须立即用它重新调用 product_search
+6. 意图是 compare → 调用 product_detail_batch 获取详情，再调用 price_compare
 - 每次只调用一个工具
 - 不要重复调用已调用过的工具（相同参数）
 - 信息充足时直接给出 Final Answer，不要多余调用
 - 严禁凭空编造商品信息，所有推荐必须基于工具返回的真实数据
 
-重要：调用 product_search 时，entities 参数必须使用上面"提取的实体"中的完整实体对象，不要自行重建或省略字段。soft_requirements、hard_constraints、gender 等字段对排序至关重要。"""
+重要：调用 product_search 时，entities 参数必须使用上面"提取的实体"中的完整实体对象，不要自行重建或省略字段。soft_requirements、hard_constraints、gender 等字段对排序至关重要。
+
+Final Answer 格式：
+当你完成检索并准备推荐商品时，必须输出 JSON 格式（不要输出其他文字）：
+
+```json
+{{
+  "recommendations": [
+    {{"product_id": "商品ID", "text": "推荐理由（2-3句话，结合用户需求说明为什么推荐）"}},
+    {{"product_id": "商品ID", "text": "推荐理由"}}
+  ],
+  "summary": "总结语（1句话，如'综合你的需求，前两款最推荐'）"
+}}
+```
+
+- recommendations 按推荐优先级排序，product_id 必须是工具返回的真实商品 ID
+- 每个 text 要个性化，结合用户的具体需求（场景、偏好、预算等）
+- summary 是整体总结，放在推荐列表之后
+- 如果只找到 1 个商品，recommendations 只放 1 个
+- 如果没有找到商品，recommendations 为空数组，summary 说明原因"""
 
 
 def _format_entities(entities: dict) -> str:
@@ -56,6 +84,12 @@ def _format_entities(entities: dict) -> str:
                 parts.append(f"{k}={_json.dumps(v, ensure_ascii=False)}")
             continue
         parts.append(f"{k}={v}")
+
+    # Always show missing_critical_fields if present
+    missing = entities.get("missing_critical_fields", [])
+    if missing:
+        parts.append(f"⚠️ 缺失关键字段: {missing}")
+
     return ", ".join(parts) if parts else "无"
 
 
@@ -72,6 +106,49 @@ def _format_memory(memory_chunks: list) -> str:
     return "\n".join(lines) if lines else "无历史记忆"
 
 
+def _format_search_plan(search_plan: dict) -> str:
+    """Format search plan for prompt display."""
+    if not search_plan:
+        return "无（直接检索）"
+
+    mode = search_plan.get("search_mode", "single")
+    reason = search_plan.get("reason", "")
+
+    if mode == "single":
+        return "单次检索（商品类型明确）"
+
+    # Multi-query mode
+    parts = [f"模式：多 query 检索"]
+    if reason:
+        parts.append(f"原因：{reason}")
+
+    target_types = search_plan.get("target_product_types", [])
+    if target_types:
+        parts.append(f"目标品类：{', '.join(target_types)}")
+
+    requests = search_plan.get("search_requests", [])
+    if requests:
+        parts.append(f"检索请求数：{len(requests)}")
+        for i, req in enumerate(requests[:5], 1):
+            q = req.get("query", "")
+            pt = req.get("product_type", "不限")
+            parts.append(f"  {i}. [{pt}] {q}")
+
+    return "\n".join(parts)
+
+
+def _format_intent(intent: dict | str) -> str:
+    """Format intent dict for prompt display."""
+    if isinstance(intent, str):
+        return intent
+    if not intent or not isinstance(intent, dict):
+        return "未知"
+    user_goal = intent.get("user_goal", "")
+    task_type = intent.get("task_type", "")
+    execution_hint = intent.get("execution_hint", "")
+    return f"{user_goal} / {task_type} / {execution_hint}"
+
+
 def _format_tool_descriptions(tools: list) -> str:
     """Format tool list for prompt display."""
     lines = []
@@ -84,23 +161,25 @@ def build_system_prompt(state: dict) -> str:
     """Build the ReAct system prompt with preprocessed context.
 
     Args:
-        state: AgentState containing intent, entities, memory_chunks
+        state: AgentState containing intent, entities, memory_chunks, search_plan
 
     Returns:
         Formatted system prompt string
     """
-    intent = state.get("intent", "unknown")
+    intent = state.get("intent", {})
     confidence = state.get("_intent_confidence", 0.8)
     entities = state.get("entities", {})
     memory_chunks = state.get("memory_chunks", [])
+    search_plan = state.get("search_plan", {})
 
     tools = get_dynamic_tools()
 
     return _SYSTEM_TEMPLATE.format(
-        intent=intent,
+        intent=_format_intent(intent),
         confidence=f"{confidence:.2f}",
         entities=_format_entities(entities),
         memory_summary=_format_memory(memory_chunks),
+        search_plan=_format_search_plan(search_plan),
         tool_descriptions=_format_tool_descriptions(tools),
     )
 

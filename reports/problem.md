@@ -709,3 +709,552 @@ product_search 日志输出 exact/supplemental 数量和分组 ID。
 每个软需求都包含在 attribute_scores 中（含未命中项），便于后续生成解释。
 
 **状态**: 已修复
+
+---
+
+## P20: 服饰场景歧义未识别 + 澄清流程不完整
+
+**发现时间**: 2026-05-19
+
+**现象**: 用户提问"我下周要面试，想买一件看起来正式但不太老气的衣服"，系统直接按单次检索处理，product_type="衣服" 无法精确匹配，exact=0, supplemental=10。追问后用户回复"男性的衬衫"被当成新的独立搜索，丢失了面试、正式、不老气等上下文。
+
+**根因**: 三层问题叠加。
+
+1. **entity_validator 缺失** — entity_extractor 只处理语义歧义（"苹果"是水果还是手机），不处理关键字段缺失。gender=null、product_type="衣服" 时 ambiguous=false
+2. **search_planner 时机错误** — 即使 ambiguous=true，search_planner 仍会执行并生成 outfit_multi_query，流程不干净
+3. **澄清回答被当成新请求** — 用户回复"男性的衬衫"时，系统重新走 intent_classifier → entity_extractor，丢失了上一轮的面试、正式、不老气等上下文
+
+**解决方案**: 三层修复。
+
+### 1. entity_validator — 后置规则校验
+
+新增 `src/agents/entity_validator.py`：
+- 检查品类+缺失字段的组合（服饰+gender缺失、服饰+product_type模糊、护肤+skin_type缺失）
+- 标记 `missing_critical_fields` 列表
+- 设置 `ambiguous=true`
+
+### 2. ask_clarification — 策略化追问
+
+改造 `src/tools/agent_tools.py` 的 `ask_clarification`：
+- 语义歧义 → 必须追问
+- 服饰类 gender+product_type 都缺 → 优先追问
+- 只缺 gender，product_type 明确 → 轻量追问
+- 已追问过一次 → 不再追问，按假设继续
+- 返回结构化结果：`{should_ask, strategy, question, assumptions, response_note}`
+
+### 3. clarification_parser — 澄清回答合并
+
+新增 `src/agents/clarification_parser.py`：
+- 解析用户回复中的 gender（男/女）、product_type（衬衫/西裤等）、style（正式/休闲等）
+- 合并到上一轮的 entities 中
+- 清除已解决的 missing_critical_fields
+
+### 4. 状态跟踪 — pending_clarification
+
+- `state.py` 新增 `pending_clarification` 字段
+- `react_node.py`：当 agent 返回澄清问题时，设置 `pending_clarification`
+- `preprocessing.py`：检测到 `pending_clarification` 时，走澄清回答路径而非正常提取
+
+### 5. search_planner 时机修正
+
+- `preprocessing.py`：当 `missing_critical_fields` 非空时，跳过 search_planner，返回 `search_mode="deferred"`
+
+**修复后流程**:
+
+```
+用户: "我下周要面试，想买一件看起来正式但不太老气的衣服"
+↓
+entity_validator: missing=[gender, product_type], ambiguous=true
+↓
+search_planner: 跳过（search_mode=deferred）
+↓
+Agent: 调用 ask_clarification → should_ask=true, strategy=ask
+↓
+Agent: 返回追问 "你想看男装还是女装？面试的话，我建议优先看衬衫或西装外套。"
+↓
+state: pending_clarification = {fields: [gender, product_type], entities_snapshot: {...}}
+↓
+用户: "男性的衬衫"
+↓
+preprocessing: 检测到 pending_clarification → 走 clarification_parser
+↓
+clarification_parser: gender=男, product_type=衬衫, 合并到之前的 entities
+↓
+merged entities: {gender: "男", product_type: "衬衫", scenario: "面试", soft_requirements: [正式, 不老气]}
+↓
+search_planner: 生成 single 检索计划
+↓
+Agent: 调用 product_search → 返回衬衫推荐
+```
+
+**状态**: 已修复
+
+---
+
+## P21: Intent 分类粒度不足 — "search" 和 "recommend" 无法区分执行路径
+
+**发现时间**: 2026-05-19
+
+**现象**: "帮我找衬衫" 和 "推荐几款适合面试的衬衫" 都分类为 `intent="search"`，下游 Agent 无法根据意图选择不同的检索策略（直接搜索 vs 场景推荐）。"帮我搭一套通勤穿搭" 也被分为 "search"，丢失了 "需要多品类组合" 的执行信息。
+
+**根因**: intent 只有一层分类（search/recommend/compare/detail/order），粒度太粗：
+1. "search" 和 "recommend" 混为一谈 — 用户找商品和请求推荐是不同的交互模式
+2. 缺少任务类型维度 — 简单搜索、场景推荐、穿搭规划、比价是不同复杂度的任务
+3. 缺少执行建议 — Agent 需要知道是直接搜索、多 query 检索还是先澄清
+
+**解决方案**: 三层 intent 结构。
+
+### 1. 三层 intent 定义
+
+| 层级 | 字段 | 取值 | 含义 |
+|------|------|------|------|
+| 用户目标 | user_goal | recommend_product / find_product / compare_products / view_detail / place_order | 用户想做什么 |
+| 任务类型 | task_type | shopping_advice / product_search / outfit_planning / price_comparison / detail_inquiry / order_placement | 任务复杂度 |
+| 执行建议 | execution_hint | contextual_search / direct_search / multi_query / compare / get_detail / clarify_first | Agent 怎么执行 |
+
+### 2. 修改文件
+
+- `src/router/llm_router.py` — SYSTEM_PROMPT 重写为三层输出，新增判断规则和示例
+- `src/router/semantic_router.py` — `_INTENT_MAP` 将旧 flat intent 映射到三层结构
+- `src/router/intent_classifier.py` — 返回 `(dict, float, str)`，兜底默认值改为 dict
+- `src/graph/state.py` — `intent: str` → `intent: dict`
+- `src/graph/preprocessing.py` — Path B 默认值从 `"search"` 改为 `{}`
+- `src/agents/react_prompt.py` — 新增 `_format_intent()` 函数，格式化为 `user_goal / task_type / execution_hint`
+- `src/graph/postprocessing.py` — 从 intent dict 提取 `user_goal` 字符串传给 `write_chunk`
+
+### 3. 向后兼容
+
+- 旧架构 `shopping_graph.py` 不修改，仍使用 flat intent 字符串
+- 新旧架构通过 API 切换，互不影响
+
+**示例**:
+
+```
+"帮我找衬衫"
+→ {user_goal: find_product, task_type: product_search, execution_hint: direct_search}
+
+"推荐几款适合面试的衬衫"
+→ {user_goal: recommend_product, task_type: shopping_advice, execution_hint: contextual_search}
+
+"帮我搭一套通勤穿搭"
+→ {user_goal: recommend_product, task_type: outfit_planning, execution_hint: multi_query}
+
+"我下周要面试，想买衣服"
+→ {user_goal: recommend_product, task_type: shopping_advice, execution_hint: clarify_first}
+```
+
+**状态**: 已修复
+
+---
+
+## P22: ask_clarification 返回预构建 NL 文本，系统丢失追问结构信息
+
+**发现时间**: 2026-05-19
+
+**现象**: `ask_clarification` tool 返回 `should_ask=true`，但 `question_count=0`，没有返回 `fields`、`question_type`、`question_spec` 等结构化信息。系统只知道"要追问"，不知道"追问了什么"。
+
+**影响**:
+1. `pending_clarification` 无法记录追问的具体字段（gender? product_type? skin_type?）
+2. 下一轮用户回答时，`clarification_parser` 不知道该解析哪些字段
+3. 无法区分"追问了 gender+product_type"和"追问了预算"这两种不同场景
+4. 状态机缺少 `question_count`，无法正确管理追问轮次
+
+**根因**: `ask_clarification` 的设计定位是"生成追问文本"，而不是"决策追问结构"。每个 return path 都用 `_build_clothing_question()` 等函数预构建自然语言字符串（`question` 字段），但没有返回结构化的追问意图。
+
+**解决方案**: Tool 决策 + LLM 表达的职责分离。
+
+### 1. agent_tools.py — 返回结构化 question_spec
+
+每个 return path 的返回结构从：
+
+```python
+{
+    "should_ask": True,
+    "strategy": "ask",
+    "priority_fields": ["gender", "product_type"],
+    "question": "你想看男装还是女装？面试的话，我建议优先看衬衫或西装外套。",  # 预构建 NL
+    "assumptions": None,
+    "response_note": None,
+}
+```
+
+改为：
+
+```python
+{
+    "should_ask": True,
+    "strategy": "ask",
+    "fields": ["gender", "product_type"],       # 追问哪些字段
+    "question_count": 1,                         # 本次追问几个问题
+    "question_type": "clothing_gender_and_type", # 语义类型
+    "question_spec": {                           # 结构化追问规格
+        "must_ask": ["gender", "product_type"],
+        "context": "面试场景",
+        "suggestions": {"product_type": ["衬衫", "西装外套"]}
+    },
+    "assumptions": None,
+}
+```
+
+删除 `_build_semantic_question()`、`_build_clothing_question()`、`_build_assume_note()` 三个 NL 构建函数。
+
+### 2. react_node.py — pending_clarification 使用新字段
+
+```python
+result["pending_clarification"] = {
+    "fields": data.get("fields", []),
+    "question_spec": data.get("question_spec", {}),
+    "question_type": data.get("question_type", ""),
+    "strategy": data.get("strategy", ""),
+    "entities_snapshot": entities,
+}
+```
+
+### 3. react_prompt.py — 教 LLM 如何使用 question_spec
+
+决策规则新增 `question_spec` 使用说明：
+- `question_spec.must_ask`: 必须问的字段
+- `question_spec.context`: 场景上下文，融入追问文本
+- `question_spec.suggestions`: 建议选项，引导用户选择
+- 追问文本要自然流畅，不要机械罗列字段名
+
+### 4. state.py — pending_clarification 注释更新
+
+```python
+pending_clarification: dict | None  # {fields, question_spec, question_type, strategy, entities_snapshot}
+```
+
+**修复后效果**:
+
+```
+ask_clarification 返回:
+{
+    "should_ask": True,
+    "strategy": "ask",
+    "fields": ["gender", "product_type"],
+    "question_count": 1,
+    "question_type": "clothing_gender_and_type",
+    "question_spec": {
+        "must_ask": ["gender", "product_type"],
+        "context": "面试场景",
+        "suggestions": {"product_type": ["衬衫", "西装外套"]}
+    }
+}
+
+LLM 生成: "你想看男装还是女装？面试的话，我建议优先看衬衫或西装外套。"
+
+系统侧始终知道:
+- 问了几个问题: question_count=1
+- 问的是什么字段: fields=[gender, product_type]
+- 用户回答时该解析什么: pending_clarification.fields
+```
+
+**状态**: 已修复
+
+---
+
+## P23: pending_clarification 跨轮次丢失 — AgentState 缺少字段定义
+
+**发现时间**: 2026-05-19
+
+**现象**: 第一轮 `ask_clarification` 正确设置了 `pending_clarification`（日志可见 `pending_clarification_set fields=["gender", "product_type"]`），但第二轮用户回复"男性的衬衫"后，系统重新走了完整的正常流程（entity_extractor → intent_classifier → entity_validator → search_planner），而非澄清回答路径。
+
+第二轮 intent 被重新分类为：
+```
+user_goal = find_product
+task_type = product_search
+execution_hint = direct_search
+```
+
+说明 `preprocessing.py` 的 Path B（`if pending:` 分支）完全没有触发。
+
+**根因**: `AgentState` TypedDict 缺少 `pending_clarification` 和 `search_plan` 字段定义。
+
+LangGraph 的 checkpointer 只持久化 TypedDict 中定义的字段。`react_node.py` 返回 `{"pending_clarification": {...}}` 时，LangGraph 将其合并到内存中的 state dict，但 checkpointer 序列化时会丢弃未在 TypedDict 中声明的字段。第二轮加载 checkpoint 时，`pending_clarification` 不存在，Path B 不触发。
+
+同理，`search_plan` 也未在 `AgentState` 中声明，`react_node.py` 读取 `state.get("search_plan", {})` 始终返回空 dict。
+
+**对比**:
+
+| 文件 | 定义的 State | 有 pending_clarification? |
+|------|------|------|
+| `state.py` (ShoppingState) | 旧工作流 | ✓ |
+| `agent_state.py` (AgentState) | 新 Agent 图 | ✗ ← 问题 |
+
+`shopping_agent.py` 使用 `AgentState`，不是 `ShoppingState`。
+
+**解决方案**: 补全 `AgentState` 字段定义。
+
+### 1. agent_state.py — 新增两个字段
+
+```python
+class AgentState(TypedDict):
+    # ... existing fields ...
+
+    # === Deterministic preprocessing output ===
+    search_plan: dict                           # Search plan from search_planner
+
+    # === Clarification state ===
+    pending_clarification: dict | None          # Awaiting clarification answer
+```
+
+同时修正 `intent` 类型：`str` → `dict`（与 P21 三层 intent 结构一致）。
+
+### 2. shopping_agent.py — initial_state 类型修正
+
+```python
+initial_state = {
+    ...
+    "intent": {},        # was "" (str), now dict
+    "search_plan": {},   # new field
+    ...
+}
+```
+
+注意：`pending_clarification` **不加入** initial_state。这样第二轮加载 checkpoint 时，该字段从上一轮的 checkpoint 中恢复，而非被初始值覆盖。
+
+**修复后跨轮次流程**:
+
+```
+第一轮:
+  preprocess → react_loop → ask_clarification(should_ask=true)
+  → state.pending_clarification = {fields: [gender, product_type], ...}
+  → checkpointer 保存（AgentState 声明了该字段，不会被丢弃）
+
+第二轮:
+  run_agent_stream 创建 initial_state（不含 pending_clarification）
+  → LangGraph 加载 checkpoint，合并 initial_state
+  → pending_clarification 从 checkpoint 恢复（不在 initial_state 中，不被覆盖）
+  → preprocess 检测到 pending → 走 Path B
+  → clarification_parser 解析 "男性的衬衫" → gender=男, product_type=衬衫
+  → 合并上一轮 entities（保留 scenario=面试, soft_requirements=[正式, 不老气]）
+  → 清除 pending_clarification
+  → plan_search → Agent 检索
+```
+
+**状态**: 已修复
+
+---
+
+## P24: 上下文合并日志缺失 + pending_clarification 清除无日志
+
+**发现时间**: 2026-05-20
+
+**现象**: 第二轮 preprocessing 日志显示 `soft_req_count=0, scenario=null`，但 product_search 实际收到的 entities 包含 `scenario="面试", soft_requirements=["正式", "不老气", "面试"]`。上下文确实被补回来了，但日志没有告诉你是哪个模块、在哪一步合并的。
+
+同时 `pending_clarification` 被清除时没有日志，无法确认清除是否发生、清除原因是什么。
+
+**根因**: 两个日志缺失。
+
+1. **合并过程不可见** — `clarification_merged` 日志只记录 `gender`、`product_type`、`remaining_missing`，不记录从上一轮快照继承了哪些字段（scenario、soft_requirements 等），也不输出完整合并结果
+2. **清除无日志** — `pending_clarification: None` 在 return 时直接设置，没有日志记录清除动作和原因
+
+**解决方案**: 补全 Path B 日志链路。
+
+### 1. preprocessing.py — 新增 context_merge_done 日志
+
+在 `parse_clarification_answer` 返回后，记录完整的合并过程：
+
+```python
+logger.info("context_merge_done",
+    source="pending_clarification.entities_snapshot",
+    current_entities={k: entities.get(k) for k in pending_fields},  # 本轮解析的
+    merged_entities={...},    # 完整合并结果（非空字段）
+    carried_fields=[...],     # 从快照继承的字段（非 pending_fields）
+    gender=..., product_type=..., scenario=...,
+    soft_req_count=...,
+    remaining_missing=...)
+```
+
+### 2. preprocessing.py — 新增 pending_clarification_cleared 日志
+
+在 return 之前记录清除动作：
+
+```python
+filled_fields = [f for f in pending_fields if entities.get(f) is not None]
+reason = "all_required_fields_filled" if not missing_fields else "partial_fields_filled"
+logger.info("pending_clarification_cleared",
+    reason=reason,
+    filled_fields=filled_fields,
+    remaining_missing=missing_fields)
+```
+
+**修复后 Path B 完整日志链路**:
+
+```
+clarification_answer_detected
+  pending_fields=[gender, product_type]
+  user_input="男性的衬衫"
+
+context_merge_done
+  source=pending_clarification.entities_snapshot
+  current_entities={gender: 男, product_type: 衬衫}
+  carried_fields=[category, quantity, scenario, soft_requirements]
+  merged_entities={category: 服饰, gender: 男, product_type: 衬衫, scenario: 面试, ...}
+  soft_req_count=3
+
+pending_clarification_cleared
+  reason=all_required_fields_filled
+  filled_fields=[gender, product_type]
+  remaining_missing=[]
+```
+
+**状态**: 已修复
+
+---
+
+## P25: tool_executor 日志 question_count 始终为 0 — log extractor 读取了不存在的字段
+
+**发现时间**: 2026-05-20
+
+**现象**: `ask_clarification` tool 返回 `should_ask=true, question_count=1`，但 `tool_executor` 日志显示 `question_count=0`。日志中 `pending_clarification_set` 能正确显示 `question_type` 和 `fields`（因为 react_node 直接读 tool 返回），但 `tool_executed` 日志始终显示 `question_count=0`。
+
+**根因**: `tool_executor.py` 的 `ask_clarification` log extractor 读取了不存在的字段：
+
+```python
+# 错误：tool 返回中没有 "questions" 列表
+"question_count": len(r.get("questions", [])),  # 永远返回 0
+```
+
+`ask_clarification` 返回的是 `question_count: int`（直接数字），不是 `questions: list`。`r.get("questions", [])` 返回空列表，`len([])` = 0。
+
+**解决方案**: 修改 log extractor，直接读取 tool 返回的实际字段：
+
+```python
+"ask_clarification": lambda r: {
+    "should_ask": r.get("should_ask", False),
+    "strategy": r.get("strategy", ""),
+    "fields": r.get("fields", []),
+    "question_count": r.get("question_count", 0),
+    "question_type": r.get("question_type", ""),
+},
+```
+
+**修复后日志输出**:
+
+```
+tool_executed tool=ask_clarification
+  args={asked_fields: [...]}
+  result={should_ask: true, strategy: "ask", fields: ["gender", "product_type"],
+          question_count: 1, question_type: "clothing_gender_and_type"}
+```
+
+**状态**: 已修复
+
+---
+
+## P26: 澄清路径缺少任务切换检测 — 用户换任务时被错误合并到旧 entities
+
+**发现时间**: 2026-05-20
+
+**现象**: 第一轮追问 gender+product_type，第二轮用户说"算了，我想买鞋"，系统把"鞋"错误合并到上一轮"面试服饰推荐"的 entities 里，导致后续状态混乱。
+
+**根因**: `preprocessing.py` Path B 检测到 `pending_clarification` 后，无条件调用 `parse_clarification_answer()`，没有判断用户的回复是澄清回答还是任务切换。
+
+**风险场景**:
+
+| 用户输入 | 实际意图 | 当前行为 | 正确行为 |
+|------|------|------|------|
+| 男性的衬衫 | 澄清回答 | 合并 ✓ | 合并 ✓ |
+| 我想买男士衬衫 | 澄清回答 | 合并 ✓ | 合并 ✓ |
+| 算了，我想买鞋 | 任务切换 | 错误合并 ✗ | 清除 pending，走正常流程 |
+| 不用了，帮我看平板电脑 | 任务切换 | 错误合并 ✗ | 清除 pending，走正常流程 |
+| 换成皮鞋吧 | 同场景换品类 | 错误合并 ✗ | 保留 scenario，换 product_type |
+| 随便吧 | 不明确 | 错误合并 ✗ | 再追问或假设继续 |
+
+**解决方案**: 新增 `src/agents/clarification_router.py`，在 Path B 入口做路由判定。
+
+### 1. clarification_router.py — 规则优先 + LLM 兜底
+
+**路由优先级**:
+
+```
+1. 强取消词 + 新品类 → task_switch_full
+   取消词: 不用了/不要了/算了/取消/不找了
+   且出现与 pending 无关的新品类
+
+2. 明确包含 pending_fields 的值 → clarification_answer
+   检测性别词（男/女/男士/女装...）和商品类型词
+
+3. 弱切换词 + 新品类 → task_switch_partial
+   切换词: 换成/改成/换个/我想买/帮我看
+   且出现新商品品类
+
+4. 以上都不满足 → LLM 兜底
+```
+
+**task_switch 分两种**:
+- `task_switch_full`：完全换任务（"帮我看看平板电脑"）→ 清空旧 scenario、soft_requirements
+- `task_switch_partial`：同场景换品类（"换成皮鞋吧"）→ 保留 scenario 和 soft_requirements
+
+**方案 B**：router 顺便解析 parsed_fields，后面直接用，不再二次调用 parser。
+
+### 2. preprocessing.py — Path B 重构
+
+```
+if pending:
+    routing = await route_clarification(...)
+
+    task_switch_full → 清除 pending → 走正常 Path A
+    task_switch_partial → 清除 pending → 走 Path A + 注入旧 scenario/soft_requirements
+    clarification_answer → 用 parsed_fields 合并 → 走 Path B 后续
+    unclear → 清除 pending → deferred search_plan → Agent 决策
+```
+
+### 3. 新增文件
+
+| 文件 | 用途 |
+|------|------|
+| `src/agents/clarification_router.py` | 路由判定 + 字段解析 |
+
+### 4. 修改文件
+
+| 文件 | 改动 |
+|------|------|
+| `src/graph/preprocessing.py` | Path B 入口调用 router，task_switch 回退 Path A |
+
+**验证场景**:
+
+| 输入 | route | 效果 |
+|------|------|------|
+| 男性的衬衫 | clarification_answer | gender=男, product_type=衬衫，合并旧 entities |
+| 我想买男士衬衫 | clarification_answer | 同上（"我想买"不误判为切换） |
+| 算了，我想买鞋 | task_switch_full | 清空旧场景，重新提取 |
+| 不用了，帮我看平板电脑 | task_switch_full | 清空旧场景，重新提取 |
+| 换成皮鞋吧 | task_switch_partial | 保留面试场景，换 product_type 为皮鞋 |
+| 随便吧 | unclear | 清除 pending，Agent 按 assume 处理 |
+
+**状态**: 已修复
+
+## P20: prompt 模板 JSON 示例的 `{}` 被 `.format()` 误解析导致 KeyError
+
+**发现时间**: 2026-05-19
+
+**现象**: 用户提问"我想买一件适合上班穿的衬衫，口碑好点，不要太贵，男装"，报错：
+```
+KeyError: '\n  "recommendations"'
+```
+完整 traceback 指向 `react_prompt.py:177` → `_SYSTEM_TEMPLATE.format(...)`。
+
+**根因**: `_SYSTEM_TEMPLATE` 中的 Final Answer JSON 示例包含 `{` 和 `}` 字符：
+```python
+_SYSTEM_TEMPLATE = """...
+```json
+{
+  "recommendations": [
+    {"product_id": "商品ID", "text": "..."},
+  ],
+  "summary": "..."
+}
+```
+..."""
+```
+调用 `_SYSTEM_TEMPLATE.format(intent=..., entities=..., ...)` 时，Python 的 `str.format()` 把 JSON 示例中的 `{"product_id": ...}` 当作格式化占位符，尝试解析 key `product_id` → 实际触发的是 `recommendations` 外层的 `\n  "recommendations"` 作为 format key，抛出 KeyError。
+
+**解决方案**: 模板中 JSON 示例的 `{` 和 `}` 全部转义为 `{{` 和 `}}`。
+
+**额外修复**（非本次根因，但是防御性改进）:
+1. `react_node.py:115` — key normalization 增强：`k.strip().strip('"').strip("'").strip()`
+2. `llm_client.py` — `chat_json` 增加 regex fallback（提取 `{...}` 块），与 `react_node.py` 对齐
+
+**状态**: 已修复

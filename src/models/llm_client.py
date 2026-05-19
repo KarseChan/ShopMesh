@@ -1,6 +1,7 @@
 """LLM client factory — supports multiple providers with per-agent config."""
 
 import json
+import re
 from functools import lru_cache
 
 import httpx
@@ -51,7 +52,19 @@ class LLMClient:
             content = content.split("```json")[1].split("```")[0]
         elif "```" in content:
             content = content.split("```")[1].split("```")[0]
-        return json.loads(content.strip())
+
+        # Fallback: find first { ... } block via regex
+        json_str = content.strip()
+        if not json_str.startswith("{"):
+            match = re.search(r"\{[\s\S]*\}", json_str)
+            if match:
+                json_str = match.group(0)
+
+        parsed = json.loads(json_str)
+        # Normalize keys: strip whitespace/newlines/embedded quotes that LLM may inject
+        if isinstance(parsed, dict):
+            parsed = {k.strip().strip('"').strip("'").strip(): v for k, v in parsed.items()}
+        return parsed
 
 
 @lru_cache(maxsize=8)

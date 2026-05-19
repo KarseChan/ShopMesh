@@ -11,6 +11,7 @@ This module provides the new Agent-based alternative.
 
 import asyncio
 import json
+import traceback
 import uuid
 from typing import AsyncGenerator
 
@@ -104,9 +105,10 @@ async def run_agent_stream(
     initial_state = {
         "messages": initial_messages,
         "user_id": user_id,
-        "intent": "",
+        "intent": {},
         "entities": {},
         "memory_chunks": [],
+        "search_plan": {},
         "search_results": [],
         "user_profile": {},
         "tool_calls_log": [],
@@ -154,12 +156,32 @@ async def run_agent_stream(
         state_values = final_state.values if final_state else {}
 
         final_response = state_values.get("final_response", "")
-        search_results = state_values.get("search_results", [])
 
-        # Send results event
+        # Extract product results from tool_calls_log (agent mode)
+        # In agent graph, product_search results are in tool_calls_log, not search_results
+        search_results = state_values.get("search_results", [])
+        if not search_results:
+            for entry in reversed(state_values.get("tool_calls_log", [])):
+                if entry.get("tool") in ("product_search", "multi_query_search"):
+                    tool_data = entry.get("result", {})
+                    if isinstance(tool_data, dict):
+                        data = tool_data.get("data", tool_data)
+                        search_results = data.get("results", [])
+                    break
+
+        # Get structured recommendations
+        recommendations = state_values.get("recommendations", [])
+
+        # Send results event (products + per-product recommendations)
         if search_results:
             top_results = search_results[:5]
-            yield {"event": "results", "data": {"results": top_results}}
+            # Filter recommendations to only include products in top_results
+            top_ids = {p.get("product_id", "") for p in top_results}
+            top_recs = [r for r in recommendations if r.get("product_id", "") in top_ids] if recommendations else []
+            yield {"event": "results", "data": {
+                "products": top_results,
+                "recommendations": top_recs,
+            }}
 
         # Send explanation event
         if final_response:
@@ -168,6 +190,8 @@ async def run_agent_stream(
         yield {"event": "done", "data": {"request_id": request_id}}
 
     except Exception as e:
-        logger.error("agent_stream_error", error_type=type(e).__name__, error_message=str(e))
+        tb = traceback.format_exc()
+        logger.error("agent_stream_error", error_type=type(e).__name__, error_message=str(e),
+                     traceback=tb)
         yield {"event": "error", "data": {"error": str(e)}}
         yield {"event": "done", "data": {"request_id": request_id}}
