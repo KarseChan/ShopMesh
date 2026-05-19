@@ -15,6 +15,7 @@ _RELAXATION_STEPS = [
     ("brand", "去掉品牌限制"),
     ("price_max", "扩大价格上限"),
     ("price_min", "去掉价格下限"),
+    ("soft_requirements", "去掉软需求限制"),
     ("scenario", "去掉场景限制"),
     ("preference", "去掉偏好限制"),
     ("product_type", "去掉商品类型限制"),
@@ -44,15 +45,18 @@ async def constraint_relaxation(entities: dict, failed_reason: str) -> dict:
     new_entities = {**entities}
 
     for field, description in _RELAXATION_STEPS:
-        if new_entities.get(field) is not None:
-            new_entities[field] = None
+        current = new_entities.get(field)
+        # Check if field has a meaningful value (not None, not empty list)
+        if current is not None and current != []:
+            # List fields are cleared to empty list; others set to None
+            new_entities[field] = [] if isinstance(current, list) else None
             relaxed.append(description)
             logger.info("constraint_relaxed", field=field, reason=failed_reason)
             break  # Relax one step at a time; Agent can call again if needed
 
     steps_remaining = sum(
         1 for f, _ in _RELAXATION_STEPS
-        if new_entities.get(f) is not None
+        if new_entities.get(f) is not None and new_entities.get(f) != []
     )
 
     return {

@@ -494,3 +494,75 @@ matched = [by_id[pid] for pid in product_ids if pid in by_id]
 ```
 
 **状态**: 已修复
+
+---
+
+## P15: Ranker 维度写死 + Agent 边界模糊 — 动态权重架构重构
+
+**发现时间**: 2026-05-19
+
+**现象**: 当前 ranker 存在两个结构性问题：
+1. 每个新偏好维度（不容易皱、夏天穿、透气）都需要在 `_adjust_weights` 中写 if/else 分支，不可扩展
+2. Agent 不应该管排序权重细节，只应决定工具路径
+
+**根因**: `_adjust_weights` 采用硬编码关键词匹配模式，每新增一种用户偏好就要加一段 if/else。ranker 维度固定为 5 个，缺少通用的"属性匹配"维度。
+
+**解决方案**: 三层架构重构。
+
+### 1. Entity Extractor — 结构化需求解析
+
+- SYSTEM_PROMPT 新增 `hard_constraints`（硬过滤条件）和 `soft_requirements`（软需求列表）
+- soft_requirements 每个元素：`{"text": "原始描述", "type": "类型", "importance": 0.5-1.0}`
+- type 示例：season_scene、functional_preference、style_preference、quality_signal、gift_context
+- importance 引导：必须→1.0，最好→0.7，顺便→0.5
+- 保留旧字段（scenario/preference）向后兼容
+
+### 2. Ranker — 通用 match 函数 + rank profiles
+
+**新增函数**:
+- `_build_product_text(product)`: 拼接 name + product_type + features
+- `_keyword_match_score(req_text, product_text)`: 关键词命中率 + 同义词扩展
+- `_score_attribute_match(product, soft_requirements)`: 对每个 requirement 加权平均匹配分
+
+**新增维度**: `attribute_match`（第 6 维），替代旧的 `_adjust_weights` 硬编码逻辑
+
+**同义词配置**: `configs/ranking/synonyms.yaml`，约 8 组常见同义词（夏天→透气/速干/薄款，不容易皱→免烫/抗皱等）
+
+**RANK_PROFILES**（4 个稳定 profile）:
+- `default`: 均衡权重
+- `price_sensitive`: 价格权重 0.30
+- `quality_sensitive`: 口碑权重 0.25
+- `scenario_preference`: 属性匹配权重 0.30
+
+**select_rank_profile(entities)**: 根据 preference 关键词和 soft_requirements 数量自动选择 profile
+
+**删除**: `_adjust_weights()` 函数（被 profile 选择器替代）
+
+### 3. constraint_relaxation — 适配 soft_requirements
+
+- `_RELAXATION_STEPS` 新增 `("soft_requirements", "去掉软需求限制")`
+- 优先级在 price 之后、scenario 之前
+- 列表字段清空为 `[]`，而非 `None`
+
+### 4. react_prompt + tool_executor
+
+- `_format_entities` 对 soft_requirements 特殊格式化为 `"软需求=[夏天穿(0.8), 不容易皱(0.9)]"`
+- tool_executor 实体日志白名单新增 soft_requirements、hard_constraints
+
+**修复后效果**:
+
+```
+用户: "有没有适合夏天穿、不容易皱的男士衬衫"
+→ entity_extractor 输出:
+  hard_constraints: {product_type: "衬衫", gender: "男"}
+  soft_requirements: [
+    {text: "夏天穿", type: "season_scene", importance: 0.8},
+    {text: "不容易皱", type: "functional_preference", importance: 0.9}
+  ]
+→ ranker:
+  select_rank_profile → "scenario_preference"（2 个软需求）
+  attribute_match: 免烫衬衫=0.9, 普通T恤=0.1
+  → 免烫衬衫排名高于普通T恤
+```
+
+**状态**: 已修复

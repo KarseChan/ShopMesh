@@ -57,7 +57,8 @@ def _extract_args_for_log(tool_name: str, args: dict) -> dict:
         log_args["entities"] = {
             k: v for k, v in ents.items()
             if k in ("category", "product_type", "brand", "scenario",
-                     "preference", "price_min", "price_max")
+                     "preference", "price_min", "price_max",
+                     "soft_requirements", "hard_constraints")
         }
 
     return log_args

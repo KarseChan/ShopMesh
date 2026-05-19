@@ -42,6 +42,18 @@ def _format_entities(entities: dict) -> str:
     for k, v in entities.items():
         if v is None or k.startswith("_") or k in ("ambiguous", "ambiguous_fields"):
             continue
+        # soft_requirements: format compactly
+        if k == "soft_requirements" and isinstance(v, list):
+            reqs = ", ".join(
+                f"{r.get('text', '')}({r.get('importance', 0.7)})"
+                for r in v if isinstance(r, dict) and r.get("text")
+            )
+            if reqs:
+                parts.append(f"软需求=[{reqs}]")
+            continue
+        # hard_constraints: skip (redundant with other fields)
+        if k == "hard_constraints":
+            continue
         parts.append(f"{k}={v}")
     return ", ".join(parts) if parts else "无"
 

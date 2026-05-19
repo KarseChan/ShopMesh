@@ -13,6 +13,8 @@ Output schema:
     "preference": "偏好 or null",
     "skin_type": "肤质 or null (护肤)",
     "concerns": "护肤需求 or null (护肤)",
+    "hard_constraints": {"product_type": "衬衫", "gender": "男"},
+    "soft_requirements": [{"text": "夏天穿", "type": "season_scene", "importance": 0.8}],
     "ambiguous": true/false,
     "ambiguous_fields": ["不确定的字段"]
 }
@@ -37,6 +39,8 @@ SYSTEM_PROMPT = (
     '  "preference": "偏好关键词或null",\n'
     '  "skin_type": "肤质或null（如油皮、干皮、敏感肌，仅护肤品类）",\n'
     '  "concerns": "护肤需求或null（如补水保湿、控油祛痘、抗老紧致，仅护肤品类）",\n'
+    '  "hard_constraints": {},\n'
+    '  "soft_requirements": [],\n'
     '  "ambiguous": true/false,\n'
     '  "ambiguous_fields": ["不确定的字段"]\n'
     "}\n"
@@ -45,6 +49,14 @@ SYSTEM_PROMPT = (
     "gender：用户明确提到的性别，如'男士'→'男'、'女生'→'女'、'男款'→'男'、'女款'→'女'。未提及则为null。\n"
     "preference：用户对商品品质的偏好描述，如'口碑好'、'销量高'、'大牌'、'便宜'、'轻薄'等。提取原词，不要改写。\n"
     "skin_type/concerns：仅当品类是护肤时才提取，其他品类设为null。\n"
+    "hard_constraints：硬过滤条件，从已提取字段中选取必须满足的条件。"
+    "通常包含 product_type（如有）和 gender（如有），也可能包含 brand、price_max 等。\n"
+    "soft_requirements：软需求列表，用户提到的非硬性偏好。每个元素：\n"
+    '  {"text": "原始描述", "type": "类型", "importance": 0.5-1.0}\n'
+    "  type 示例：season_scene（季节/场景）、functional_preference（功能偏好）、"
+    "style_preference（风格偏好）、quality_signal（品质信号）、gift_context（送礼场景）\n"
+    "  importance：用户语气强弱，'必须/一定要'→1.0，'最好/希望'→0.7，'如果能/顺便'→0.5\n"
+    "  从 scenario、preference、原始描述中提取，拆分为独立的软需求条目。\n"
     "歧义标记：当实体含义不确定时设为 true（如'苹果'可能是水果或手机），"
     "并把不确定的字段名加入 ambiguous_fields。\n"
     "只输出 JSON，不要其他文字。"
@@ -78,6 +90,8 @@ async def extract_entities(query: str) -> dict:
             "preference": result.get("preference"),
             "skin_type": result.get("skin_type"),
             "concerns": result.get("concerns"),
+            "hard_constraints": result.get("hard_constraints", {}),
+            "soft_requirements": result.get("soft_requirements", []),
             "ambiguous": result.get("ambiguous", False),
             "ambiguous_fields": result.get("ambiguous_fields", []),
         }
@@ -98,6 +112,8 @@ async def extract_entities(query: str) -> dict:
             "preference": None,
             "skin_type": None,
             "concerns": None,
+            "hard_constraints": {},
+            "soft_requirements": [],
             "ambiguous": True,
             "ambiguous_fields": ["query"],
             "_raw_query": query,
