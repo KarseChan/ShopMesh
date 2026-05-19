@@ -60,8 +60,11 @@ async def product_search(
     return {
         "results": ranked,
         "total": len(ranked),
-        "exact_matches": exact_ids,
-        "supplemental_matches": supplemental_ids,
+        "exact": len(exact_ids),
+        "supplemental": len(supplemental_ids),
+        "exact_product_ids": exact_ids,
+        "supplemental_product_ids": supplemental_ids,
+        "display_product_ids": exact_ids,  # Agent 主推荐只用这个
         "filter_applied": search_result["filter_applied"],
         "latency_ms": search_result["latency_ms"],
     }

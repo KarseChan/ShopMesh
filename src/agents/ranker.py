@@ -203,10 +203,11 @@ def _find_in_product(terms: list[str], product_lower: str) -> str | None:
 
 def _score_attribute_match(
     product: dict, soft_requirements: list[dict]
-) -> tuple[float, dict[str, list[str]]]:
+) -> tuple[float, dict[str, dict]]:
     """Score product against all soft_requirements using keyword+synonym matching.
 
-    Returns (weighted_score, evidence) where evidence maps req_text → matched terms.
+    Returns (weighted_score, attribute_scores) where attribute_scores maps
+    req_text → {"score": float, "matched_terms": list[str]}.
     """
     if not soft_requirements:
         return 0.5, {}
@@ -214,7 +215,7 @@ def _score_attribute_match(
     product_text = _build_product_text(product)
     total_score = 0.0
     total_weight = 0.0
-    evidence = {}
+    attribute_scores = {}
 
     for req in soft_requirements:
         req_text = req.get("text", "")
@@ -222,11 +223,13 @@ def _score_attribute_match(
         score, matched = _keyword_match_score(req_text, product_text)
         total_score += score * importance
         total_weight += importance
-        if matched:
-            evidence[req_text] = matched
+        attribute_scores[req_text] = {
+            "score": round(score, 3),
+            "matched_terms": matched,
+        }
 
     final_score = total_score / total_weight if total_weight > 0 else 0.5
-    return final_score, evidence
+    return final_score, attribute_scores
 
 
 # --- Dimension Scoring Functions ---
@@ -326,8 +329,8 @@ def rank(
     for i, product in enumerate(products):
         search_score = scores[i] if i < len(scores) else 0.5
 
-        # Attribute match (returns score + evidence)
-        attr_score, attr_evidence = _score_attribute_match(product, soft_requirements)
+        # Attribute match (returns score + per-requirement breakdown)
+        attr_score, attr_scores = _score_attribute_match(product, soft_requirements)
 
         # 6 dimension scores
         reasons = {
@@ -354,8 +357,8 @@ def rank(
             "rank_score": round(composite, 4),
             "rank_reasons": reasons,
         }
-        if attr_evidence:
-            entry["attribute_evidence"] = attr_evidence
+        if attr_scores:
+            entry["attribute_scores"] = attr_scores
         ranked.append(entry)
 
     ranked.sort(key=lambda x: x["rank_score"], reverse=True)
@@ -370,8 +373,8 @@ def rank(
             "rank_score": p["rank_score"],
             "dimensions": p["rank_reasons"],
         }
-        if "attribute_evidence" in p:
-            log_kwargs["attribute_evidence"] = p["attribute_evidence"]
+        if "attribute_scores" in p:
+            log_kwargs["attribute_scores"] = p["attribute_scores"]
         logger.info("rank_detail", **log_kwargs)
 
     logger.info("ranked", count=len(ranked),

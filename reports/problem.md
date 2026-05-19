@@ -662,3 +662,50 @@ return config.get("router", {}).get("semantic_threshold", 0.80)
 返回结果新增 `exact_matches` 和 `supplemental_matches` 列表。
 
 **状态**: 已修复
+
+---
+
+## P19: product_search 结果结构优化 + attribute_scores 细化
+
+**发现时间**: 2026-05-19
+
+**现象**:
+1. product_search 返回的 `product_ids` 混入了 supplemental 商品，Agent 无法区分主推荐和补充商品
+2. `attribute_evidence` 只记录命中项，未命中项缺失，无法生成完整解释
+
+**解决方案**:
+
+### 1. product_search 返回 display_product_ids（product_search.py）
+
+返回结果新增分组字段：
+
+```json
+{
+  "exact": 3,
+  "supplemental": 7,
+  "exact_product_ids": ["prod_005", "prod_006", "prod_004"],
+  "supplemental_product_ids": ["prod_007", "prod_009"],
+  "display_product_ids": ["prod_005", "prod_006", "prod_004"]
+}
+```
+
+Agent 主推荐只用 `display_product_ids`（= exact_product_ids）。
+
+### 2. tool_executor 日志适配（tool_executor.py）
+
+product_search 日志输出 exact/supplemental 数量和分组 ID。
+
+### 3. attribute_scores 细化为分项分数（ranker.py）
+
+`_score_attribute_match` 返回值从 `{req_text: [matched_terms]}` 改为：
+
+```json
+{
+  "夏天穿": {"score": 1.0, "matched_terms": ["透气"]},
+  "不容易皱": {"score": 0.0, "matched_terms": []}
+}
+```
+
+每个软需求都包含在 attribute_scores 中（含未命中项），便于后续生成解释。
+
+**状态**: 已修复

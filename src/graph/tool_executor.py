@@ -19,7 +19,10 @@ _TOOL_ARGS_LOG_FIELDS = {
 _TOOL_RESULT_LOG_FIELDS = {
     "product_search": lambda r: {
         "total": r.get("total", 0),
-        "product_ids": [p.get("product_id", "") for p in r.get("results", [])[:5]],
+        "exact": r.get("exact", 0),
+        "supplemental": r.get("supplemental", 0),
+        "exact_product_ids": r.get("exact_product_ids", [])[:5],
+        "supplemental_product_ids": r.get("supplemental_product_ids", [])[:5],
     },
     "product_detail_batch": lambda r: {
         "count": len(r) if isinstance(r, list) else 0,
