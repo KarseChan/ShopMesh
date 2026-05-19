@@ -5,7 +5,7 @@ import pytest
 from src.agents.ranker import (
     rank, explain_rank, _normalize, _score_price,
     _score_reputation, _score_timeliness, _score_personalization,
-    _adjust_weights, DEFAULT_WEIGHTS,
+    select_rank_profile, RANK_PROFILES,
 )
 
 
@@ -67,17 +67,24 @@ def test_score_personalization_price_sensitivity():
     assert _score_personalization(cheap, profile_high) > _score_personalization(expensive, profile_high)
 
 
-def test_adjust_weights_price_sensitive():
-    profile = {"price_sensitivity": 0.9}
-    weights = _adjust_weights(DEFAULT_WEIGHTS, profile, {})
-    assert weights["price"] > DEFAULT_WEIGHTS["price"]
+def test_select_rank_profile_default():
+    assert select_rank_profile({}) == "default"
 
 
-def test_adjust_weights_gift_scenario():
-    profile = {}
-    entities = {"scenario": "送礼"}
-    weights = _adjust_weights(DEFAULT_WEIGHTS, profile, entities)
-    assert weights["reputation"] > DEFAULT_WEIGHTS["reputation"]
+def test_select_rank_profile_price_sensitive():
+    assert select_rank_profile({"preference": "便宜实惠"}) == "price_sensitive"
+
+
+def test_select_rank_profile_quality_sensitive():
+    assert select_rank_profile({"preference": "口碑好"}) == "quality_sensitive"
+
+
+def test_select_rank_profile_scenario_preference():
+    entities = {"soft_requirements": [
+        {"text": "夏天穿", "type": "season_scene", "importance": 0.8},
+        {"text": "不容易皱", "type": "functional_preference", "importance": 0.9},
+    ]}
+    assert select_rank_profile(entities) == "scenario_preference"
 
 
 # === Integration Tests ===
@@ -94,7 +101,7 @@ def test_rank_basic():
     for p in ranked:
         assert "rank_score" in p
         assert "rank_reasons" in p
-        assert len(p["rank_reasons"]) == 5
+        assert len(p["rank_reasons"]) == 6
 
 
 def test_rank_empty():
@@ -132,8 +139,8 @@ def test_rank_preserves_product_fields():
 def test_rank_custom_weights():
     """Custom weights override defaults."""
     products = _make_products()
-    custom = {"relevance": 1.0, "price": 0, "reputation": 0,
-              "timeliness": 0, "personalization": 0}
+    custom = {"product_type_match": 0, "attribute_match": 0, "relevance": 1.0,
+              "price": 0, "reputation": 0, "personalization": 0}
     ranked = rank(products, search_scores=[0.9, 0.5, 0.7], weights=custom)
     # With pure relevance weighting, order should match search scores
     assert ranked[0]["name"] == "古茗奶茶"  # 0.9
@@ -152,8 +159,9 @@ def test_explain_rank_with_promotion():
     """Promotion mention in explanation."""
     product = {
         "rank_score": 0.85,
-        "rank_reasons": {"relevance": 0.9, "price": 0.8, "reputation": 0.5,
-                         "timeliness": 0.6, "personalization": 0.7},
+        "rank_reasons": {"product_type_match": 1.0, "attribute_match": 0.7,
+                         "relevance": 0.9, "price": 0.8, "reputation": 0.5,
+                         "personalization": 0.7},
         "promotion_id": "promo_01",
     }
     explanation = explain_rank(product)

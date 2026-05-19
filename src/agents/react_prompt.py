@@ -31,28 +31,29 @@ _SYSTEM_TEMPLATE = """你是一个智能导购 Agent。系统已经为你完成�
 - 每次只调用一个工具
 - 不要重复调用已调用过的工具（相同参数）
 - 信息充足时直接给出 Final Answer，不要多余调用
-- 严禁凭空编造商品信息，所有推荐必须基于工具返回的真实数据"""
+- 严禁凭空编造商品信息，所有推荐必须基于工具返回的真实数据
+
+重要：调用 product_search 时，entities 参数必须使用上面"提取的实体"中的完整实体对象，不要自行重建或省略字段。soft_requirements、hard_constraints、gender 等字段对排序至关重要。"""
 
 
 def _format_entities(entities: dict) -> str:
-    """Format entities dict for prompt display."""
+    """Format entities dict for prompt display.
+
+    Outputs structured fields as JSON so the LLM can pass them verbatim
+    to product_search without losing soft_requirements/hard_constraints.
+    """
+    import json as _json
+
     if not entities:
         return "无"
     parts = []
     for k, v in entities.items():
         if v is None or k.startswith("_") or k in ("ambiguous", "ambiguous_fields"):
             continue
-        # soft_requirements: format compactly
-        if k == "soft_requirements" and isinstance(v, list):
-            reqs = ", ".join(
-                f"{r.get('text', '')}({r.get('importance', 0.7)})"
-                for r in v if isinstance(r, dict) and r.get("text")
-            )
-            if reqs:
-                parts.append(f"软需求=[{reqs}]")
-            continue
-        # hard_constraints: skip (redundant with other fields)
-        if k == "hard_constraints":
+        # List/dict fields: output as JSON for LLM to copy verbatim
+        if isinstance(v, (list, dict)):
+            if v:  # non-empty
+                parts.append(f"{k}={_json.dumps(v, ensure_ascii=False)}")
             continue
         parts.append(f"{k}={v}")
     return ", ".join(parts) if parts else "无"

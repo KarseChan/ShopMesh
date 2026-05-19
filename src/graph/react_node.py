@@ -14,6 +14,22 @@ from src.tools.registry import get_all_tool_schemas
 
 logger = get_logger("react_node")
 
+# Fields that the Agent may omit but are needed for ranking
+_INJECTABLE_FIELDS = ("soft_requirements", "hard_constraints", "gender")
+
+
+def _inject_entity_fields(agent_entities: dict, preprocessed_entities: dict) -> None:
+    """Inject preprocessed entity fields into Agent's entities if missing.
+
+    The Agent reconstructs entities from the prompt and may drop fields like
+    soft_requirements. This function merges them back from preprocessing state.
+    """
+    for field in _INJECTABLE_FIELDS:
+        if field not in agent_entities or agent_entities[field] is None:
+            value = preprocessed_entities.get(field)
+            if value is not None and value != [] and value != {}:
+                agent_entities[field] = value
+
 
 async def node_react_loop(state: dict) -> dict:
     """ReAct core loop: Thought → Action → Observation.
@@ -45,6 +61,10 @@ async def node_react_loop(state: dict) -> dict:
             tool_args = {}
 
         logger.info("react_action", tool=tool_name, iteration=state.get("iteration", 0))
+
+        # Defensive: inject preprocessed entity fields into product_search if Agent omitted them
+        if tool_name == "product_search" and "entities" in tool_args:
+            _inject_entity_fields(tool_args["entities"], state.get("entities", {}))
 
         result = await execute_tool(tool_name, tool_args)
 
