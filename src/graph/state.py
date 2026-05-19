@@ -43,6 +43,9 @@ class ShoppingState(TypedDict):
 
     # === Read-write fields ===
     clarification_count: int                 # Clarification Engine increments
+    asked_fields: list                       # Fields already asked about (clarification dedup)
+    clarification_options: list              # Clickable options for current clarification question
+    clarification_questions: list            # Batch of clarification questions
 
     # === HITL order fields ===
     order_info: dict | None                  # Prepared order details (for interrupt)

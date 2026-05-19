@@ -9,6 +9,7 @@ Usage:
 import contextvars
 import json
 import logging
+import os
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -22,16 +23,40 @@ request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("request_id
 session_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("session_id", default="")
 
 _configured = False
+_log_file = None
+
+
+class _TeeWriter:
+    """Write to both stdout and a file simultaneously."""
+
+    def __init__(self, file):
+        self._file = file
+
+    def write(self, msg):
+        sys.stdout.write(msg)
+        self._file.write(msg)
+        self._file.flush()
+
+    def flush(self):
+        sys.stdout.flush()
+        self._file.flush()
 
 
 def _configure_structlog():
-    global _configured
+    global _configured, _log_file
     if _configured:
         return
 
     log_cfg = config.get("logging", {})
     level = log_cfg.get("level", "INFO").upper()
     log_level = getattr(logging, level, logging.INFO)
+
+    # Setup log file
+    log_path = log_cfg.get("file_path", "logs/app.jsonl")
+    log_dir = os.path.dirname(log_path)
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+    _log_file = open(log_path, "a", encoding="utf-8")
 
     structlog.configure(
         processors=[
@@ -43,7 +68,7 @@ def _configure_structlog():
         ],
         wrapper_class=structlog.make_filtering_bound_logger(log_level),
         context_class=dict,
-        logger_factory=structlog.PrintLoggerFactory(file=sys.stdout),
+        logger_factory=structlog.PrintLoggerFactory(file=_TeeWriter(_log_file)),
         cache_logger_on_first_use=True,
     )
     _configured = True

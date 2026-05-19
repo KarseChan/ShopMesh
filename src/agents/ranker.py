@@ -54,9 +54,12 @@ def _score_price(product: dict, all_products: list[dict]) -> float:
 
 
 def _score_reputation(product: dict) -> float:
-    """Reputation score: stock as proxy for popularity."""
+    """Reputation score: use explicit reputation field, fallback to stock proxy."""
+    reputation = product.get("reputation")
+    if reputation is not None:
+        return max(0.0, min(1.0, float(reputation)))
+    # Fallback: stock as proxy for popularity
     stock = product.get("stock", 0)
-    # Normalize: 0-1000 range
     return _normalize(stock, 0, 1000)
 
 
@@ -87,6 +90,37 @@ def _score_personalization(product: dict, user_profile: dict) -> float:
     return min(1.0, score)
 
 
+def _score_product_type_match(product: dict, product_type: str | None) -> float:
+    """Product type match score: penalize products that don't match the requested type.
+
+    Priority:
+    1. Exact match on product_type field (structured data)
+    2. Keyword match in product name
+    3. Keyword match in features
+    4. No match → strong penalty (0.1x)
+
+    Does NOT check category (categories are broad, e.g., "男装/上装" contains
+    T-shirts, shirts, polo shirts, etc.).
+    """
+    if not product_type:
+        return 1.0  # No constraint → no penalty
+
+    # Priority 1: structured field exact match
+    if product.get("product_type") == product_type:
+        return 1.0
+
+    # Priority 2: keyword in name
+    if product_type in product.get("name", ""):
+        return 0.9
+
+    # Priority 3: keyword in features
+    if product_type in " ".join(product.get("features", [])):
+        return 0.8
+
+    # No match → strong penalty
+    return 0.1
+
+
 def _adjust_weights(
     base_weights: dict, user_profile: dict, entities: dict
 ) -> dict:
@@ -109,6 +143,14 @@ def _adjust_weights(
     if scenario and ("送礼" in scenario or "礼物" in scenario):
         weights["reputation"] += 0.1
         weights["price"] -= 0.1
+
+    # Preference: reputation-focused ("口碑好", "销量高", "大牌", "知名")
+    preference = entities.get("preference", "")
+    if preference and any(kw in preference for kw in ["口碑", "销量", "大牌", "知名", "品牌"]):
+        shift = 0.15
+        weights["reputation"] += shift
+        weights["price"] -= shift * 0.5
+        weights["timeliness"] -= shift * 0.5
 
     # Normalize to sum = 1.0
     total = sum(weights.values())
@@ -169,6 +211,13 @@ def rank(
             for dim in reasons
         )
 
+        # Product type match penalty: non-matching products get 0.4x score
+        product_type = ents.get("product_type")
+        pt_match = _score_product_type_match(product, product_type)
+        composite *= pt_match
+
+        reasons["product_type_match"] = round(pt_match, 3)
+
         ranked.append({
             **product,
             "rank_score": round(composite, 4),
@@ -177,6 +226,16 @@ def rank(
 
     # Sort by composite score descending
     ranked.sort(key=lambda x: x["rank_score"], reverse=True)
+
+    # Log per-product ranking details
+    for i, p in enumerate(ranked):
+        logger.info("rank_detail",
+                    rank=i + 1,
+                    product_id=p.get("product_id", ""),
+                    name=p.get("name", ""),
+                    platform=p.get("platform_id", ""),
+                    rank_score=p["rank_score"],
+                    dimensions=p["rank_reasons"])
 
     logger.info("ranked", count=len(ranked),
                 top_score=ranked[0]["rank_score"] if ranked else 0,

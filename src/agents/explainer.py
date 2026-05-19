@@ -21,6 +21,12 @@ DIM_NAMES = {
     "personalization": "符合你偏好",
 }
 
+PLATFORM_NAMES = {
+    "jd": "京东",
+    "tb": "淘宝",
+    "pdd": "拼多多",
+}
+
 
 def _top_reasons(rank_reasons: dict, n: int = 2) -> list[str]:
     """Get top N ranking dimensions as human-readable reasons."""
@@ -48,6 +54,12 @@ def generate_reason(product: dict, user_profile: dict | None = None) -> str:
 
     # Build structured reason
     parts = []
+
+    # Platform
+    platform_id = product.get("platform_id", "")
+    platform_name = PLATFORM_NAMES.get(platform_id, "")
+    if platform_name:
+        parts.append(platform_name)
 
     # Preference match
     if user_profile:

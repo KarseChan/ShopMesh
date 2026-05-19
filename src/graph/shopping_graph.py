@@ -47,6 +47,58 @@ def _get_user_input(state: ShoppingState) -> str:
     return getattr(msg, "content", "")
 
 
+def _normalize_answer_values(answers: dict) -> dict:
+    """Normalize clarification answer option strings to usable entity values.
+
+    Converts price options like "500-1000" → price_max=1000,
+    quantity options like "2-3件" → quantity=3, etc.
+    """
+    import re
+
+    result = dict(answers)
+
+    # Price normalization
+    for key in ("price_max", "price_min"):
+        val = result.get(key)
+        if val is None or not isinstance(val, str):
+            continue
+        # "100以内" → 100, "100-300" → 300/100, "300-500" → 500/300, "1000以上" → None
+        if "以内" in val:
+            num = re.sub(r"[^\d]", "", val)
+            if num:
+                result[key] = int(num)
+        elif "以上" in val:
+            num = re.sub(r"[^\d]", "", val)
+            if key == "price_min" and num:
+                result[key] = int(num)
+            elif key == "price_max":
+                result[key] = None  # no upper limit
+        elif "-" in val:
+            parts = val.split("-")
+            try:
+                if key == "price_max":
+                    result[key] = int(parts[-1].strip())
+                else:
+                    result[key] = int(parts[0].strip())
+            except ValueError:
+                pass
+        else:
+            # Try direct parse
+            try:
+                result[key] = int(val)
+            except ValueError:
+                pass
+
+    # Quantity normalization: "1件" → 1, "2-3件" → 3, "5件以上" → 5
+    qty = result.get("quantity")
+    if qty and isinstance(qty, str):
+        nums = re.findall(r"\d+", qty)
+        if nums:
+            result["quantity"] = int(nums[-1])  # take the larger number
+
+    return result
+
+
 async def node_classify_intent(state: ShoppingState) -> dict:
     """Classify user intent using Semantic Router + LLM Fallback."""
     from src.router.intent_classifier import classify_intent
@@ -59,8 +111,35 @@ async def node_classify_intent(state: ShoppingState) -> dict:
 
 
 async def node_extract_entities(state: ShoppingState) -> dict:
-    """Extract structured entities from user input."""
+    """Extract structured entities from user input.
+
+    If the user message is a JSON answer to clarification questions,
+    parse it directly instead of calling the LLM.
+    """
     user_input = _get_user_input(state)
+
+    # Try parsing as JSON clarification answers
+    import json as _json
+    try:
+        answers = _json.loads(user_input)
+        if isinstance(answers, dict) and any(k in answers for k in (
+            "category", "brand", "price_max", "price_min", "scenario",
+            "quantity", "skin_type", "concerns", "preference",
+        )):
+            # Normalize option values to usable types
+            answers = _normalize_answer_values(answers)
+            # Merge answers into existing entities
+            entities = dict(state.get("entities", {}))
+            for k, v in answers.items():
+                if v is not None and v != "":
+                    entities[k] = v
+            entities.setdefault("ambiguous", False)
+            entities.setdefault("ambiguous_fields", [])
+            logger.info("entities_from_answers", entities=entities)
+            return {"entities": entities}
+    except (ValueError, TypeError):
+        pass
+
     entities = await extract_entities(user_input)
 
     # Disambiguate if needed — pass raw query for when entity value is None
@@ -87,17 +166,26 @@ async def node_recall_memory(state: ShoppingState) -> dict:
 
 
 async def node_should_clarify(state: ShoppingState) -> dict:
-    """Decide whether to ask a clarifying question."""
+    """Decide whether to ask clarifying questions (batch)."""
     entities = state.get("entities", {})
-    asked = []  # TODO: track asked fields in state
+    asked = list(state.get("asked_fields", []))
     round_num = state.get("clarification_count", 0)
 
     result = await should_clarify(entities, asked, round_num)
 
     if result["should_ask"]:
+        questions = result.get("questions", [])
+        # Track all asked fields
+        for q in questions:
+            field = q.get("field")
+            if field and field not in asked:
+                asked.append(field)
         return {
             "clarification_count": round_num + 1,
-            "explanation": result["question"],
+            "explanation": questions[0]["question"] if questions else "",
+            "clarification_options": questions[0].get("options", []) if questions else [],
+            "clarification_questions": questions,
+            "asked_fields": asked,
         }
     return {"clarification_count": round_num}
 
@@ -105,7 +193,13 @@ async def node_should_clarify(state: ShoppingState) -> dict:
 async def node_clarify(state: ShoppingState) -> dict:
     """Generate clarification question to user."""
     question = state.get("explanation", "能再具体一些吗？")
-    return {"explanation": question}
+    options = state.get("clarification_options", [])
+    questions = state.get("clarification_questions", [])
+    return {
+        "explanation": question,
+        "clarification_options": options,
+        "clarification_questions": questions,
+    }
 
 
 async def node_hybrid_retrieve(state: ShoppingState) -> dict:
@@ -285,20 +379,10 @@ async def run_shopping(user_input: str, session_id: str = "default") -> dict:
     app = build_shopping_graph()
     start = time.time()
 
+    # Only pass the new message — let other fields come from checkpoint
+    # so entities, asked_fields, clarification_count persist across turns.
     initial_state = {
         "messages": [{"role": "user", "content": user_input}],
-        "tool_calls": [],
-        "errors": [],
-        "intent": "",
-        "entities": {},
-        "memory_chunks": [],
-        "search_results": [],
-        "promotion_info": {},
-        "ranked_results": [],
-        "explanation": "",
-        "clarification_count": 0,
-        "order_info": None,
-        "resume_confirmed": None,
     }
 
     result = await app.ainvoke(initial_state, config={"configurable": {"thread_id": session_id}})
@@ -338,20 +422,10 @@ async def run_shopping_stream(user_input: str, session_id: str = "default") -> A
     app = build_shopping_graph()
     start = time.time()
 
+    # Only pass the new message — let other fields come from checkpoint
+    # so entities, asked_fields, clarification_count persist across turns.
     initial_state = {
         "messages": [{"role": "user", "content": user_input}],
-        "tool_calls": [],
-        "errors": [],
-        "intent": "",
-        "entities": {},
-        "memory_chunks": [],
-        "search_results": [],
-        "promotion_info": {},
-        "ranked_results": [],
-        "explanation": "",
-        "clarification_count": 0,
-        "order_info": None,
-        "resume_confirmed": None,
     }
 
     async for event in app.astream(initial_state, config={"configurable": {"thread_id": session_id}}):
@@ -362,7 +436,11 @@ async def run_shopping_stream(user_input: str, session_id: str = "default") -> A
             elif node_name == "extract_entities" and "entities" in node_output:
                 yield {"event": "entities", "data": node_output}
             elif node_name == "clarify":
-                yield {"event": "clarification", "data": node_output}
+                yield {"event": "clarification", "data": {
+                    "explanation": node_output.get("explanation", ""),
+                    "options": node_output.get("clarification_options", []),
+                    "questions": node_output.get("clarification_questions", []),
+                }}
             elif node_name == "rank" and "ranked_results" in node_output:
                 yield {"event": "results", "data": {"products": node_output["ranked_results"]}}
             elif node_name == "explain" and "explanation" in node_output:

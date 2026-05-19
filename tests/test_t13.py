@@ -6,19 +6,19 @@ from src.agents.clarification_engine import (
     should_clarify,
     _count_candidates,
     _get_discrimination_power,
-    _select_question,
+    _select_questions,
 )
 
 
 @pytest.mark.asyncio
-async def test_stop_when_candidates_le_20():
-    """Stop asking when candidates are already few."""
-    # category "护肤" has 4 products in mock_data
+async def test_ask_when_candidates_few_but_fields_missing():
+    """Ask questions even when candidates are few, if important fields are missing."""
     entities = {"category": "护肤", "price_min": None, "price_max": None,
-                "brand": None, "scenario": None, "quantity": None}
+                "brand": None, "scenario": None, "quantity": None,
+                "skin_type": None, "concerns": None}
     result = await should_clarify(entities, [], 0)
-    assert result["should_ask"] is False
-    assert result["reason"] == "candidates_le_20"
+    assert result["should_ask"] is True
+    assert result["reason"] == "missing_info"
 
 
 @pytest.mark.asyncio
@@ -54,8 +54,8 @@ async def test_ask_question_when_many_candidates():
     result = await should_clarify(entities, [], 0)
     # Should ask because candidates > 20 and round < 3
     assert result["should_ask"] is True
-    assert result["question"] is not None
-    assert result["candidates"] > 20
+    assert len(result["questions"]) > 0
+    assert result["candidates"] > 0
 
 
 @pytest.mark.asyncio
@@ -64,19 +64,21 @@ async def test_stop_when_no_more_questions():
     entities = {
         "category": "护肤", "price_min": 100, "price_max": 1000,
         "brand": "雅诗兰黛", "scenario": "自用", "quantity": 1,
+        "skin_type": "油皮", "concerns": "补水保湿",
     }
     result = await should_clarify(entities, [], 0)
     assert result["should_ask"] is False
-    # candidates_le_20 triggers first (6 skincare products, filtered further)
-    assert result["reason"] == "candidates_le_20"
+    assert result["reason"] == "no_more_questions"
 
 
 @pytest.mark.asyncio
 async def test_no_more_questions_via_asked_fields():
     """Reach no_more_questions when all fields are pre-asked."""
     entities = {"category": None, "price_min": None, "price_max": None,
-                "brand": None, "scenario": None, "quantity": None}
-    asked = ["category", "brand", "price_max", "price_min", "scenario", "quantity"]
+                "brand": None, "scenario": None, "quantity": None,
+                "skin_type": None, "concerns": None}
+    asked = ["category", "brand", "price_max", "price_min", "scenario", "quantity",
+             "skin_type", "concerns"]
     result = await should_clarify(entities, asked, 0)
     assert result["should_ask"] is False
     assert result["reason"] == "no_more_questions"
@@ -122,21 +124,23 @@ def test_discrimination_power_with_filter():
     assert power_filtered >= 0
 
 
-def test_select_question_skips_asked():
-    """Select question skips already-asked fields."""
+def test_select_questions_skips_asked():
+    """Select questions skips already-asked fields."""
     entities = {"category": None, "price_min": None, "price_max": None,
-                "brand": None, "scenario": None, "quantity": None}
+                "brand": None, "scenario": None, "quantity": None,
+                "skin_type": None, "concerns": None}
     asked = ["category"]
-    question = _select_question(entities, asked)
+    results = _select_questions(entities, asked)
     # Should not return the category question
-    assert question is None or "类型" not in question
+    assert all(q["field"] != "category" for q in results)
 
 
-def test_select_question_none_when_all_filled():
-    """Returns None when all fields are filled."""
+def test_select_questions_empty_when_all_filled():
+    """Returns empty list when all fields are filled."""
     entities = {
         "category": "护肤", "price_min": 100, "price_max": 1000,
         "brand": "雅诗兰黛", "scenario": "自用", "quantity": 1,
+        "skin_type": "油皮", "concerns": "补水保湿",
     }
-    question = _select_question(entities, [])
-    assert question is None
+    questions = _select_questions(entities, [])
+    assert questions == []

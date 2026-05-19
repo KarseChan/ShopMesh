@@ -2,7 +2,8 @@
 
 Output schema:
 {
-    "category": "品类 or null",
+    "category": "大品类 or null",
+    "product_type": "具体商品词 or null",
     "price_min": 数字 or null,
     "price_max": 数字 or null,
     "brand": "品牌 or null",
@@ -24,7 +25,8 @@ logger = get_logger("entity_extractor")
 SYSTEM_PROMPT = (
     "你是实体提取器。从用户输入中抽取以下字段，返回 JSON：\n"
     "{\n"
-    '  "category": "品类或null",\n'
+    '  "category": "大品类或null",\n'
+    '  "product_type": "具体商品词或null",\n'
     '  "price_min": 数字或null,\n'
     '  "price_max": 数字或null,\n'
     '  "brand": "品牌或null",\n'
@@ -37,7 +39,7 @@ SYSTEM_PROMPT = (
     '  "ambiguous_fields": ["不确定的字段"]\n'
     "}\n"
     "品类只限：护肤、奶茶、数码、服饰、食品、家居、母婴、运动\n"
-    "服饰细分：男装/上装、男装/下装、女装/上装、女装/下装（根据用户描述判断性别和上/下装）\n"
+    "product_type：用户提到的具体商品词，如'衬衫'、'T恤'、'外套'、'裤装'、'面膜'等。提取原词，不要改写。\n"
     "preference：用户对商品品质的偏好描述，如'口碑好'、'销量高'、'大牌'、'便宜'、'轻薄'等。提取原词，不要改写。\n"
     "skin_type/concerns：仅当品类是护肤时才提取，其他品类设为null。\n"
     "歧义标记：当实体含义不确定时设为 true（如'苹果'可能是水果或手机），"
@@ -63,6 +65,7 @@ async def extract_entities(query: str) -> dict:
         # Normalize: ensure all keys exist
         entities = {
             "category": result.get("category"),
+            "product_type": result.get("product_type"),
             "price_min": result.get("price_min"),
             "price_max": result.get("price_max"),
             "brand": result.get("brand"),
@@ -81,6 +84,7 @@ async def extract_entities(query: str) -> dict:
         # Fallback: return raw query as keyword, mark ambiguous
         return {
             "category": None,
+            "product_type": None,
             "price_min": None,
             "price_max": None,
             "brand": None,

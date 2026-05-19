@@ -16,6 +16,25 @@ logger = get_logger("disambiguator")
 # Built dynamically from product catalog at runtime
 _CANDIDATE_CACHE: dict[str, dict] | None = None
 
+# Static fallback for common Chinese ambiguous terms (when catalog has no candidates)
+_AMBIGUOUS_TERM_MAP: dict[str, list[dict]] = {
+    "苹果": [
+        {"value": "数码", "category": "数码", "count": 0, "hint": "Apple iPhone"},
+        {"value": "食品", "category": "食品", "count": 0, "hint": "水果"},
+    ],
+    "小米": [
+        {"value": "数码", "category": "数码", "count": 0, "hint": "小米手机/智能家居"},
+        {"value": "食品", "category": "食品", "count": 0, "hint": "粮食"},
+    ],
+    "华为": [
+        {"value": "数码", "category": "数码", "count": 0, "hint": "华为手机"},
+    ],
+    "荣耀": [
+        {"value": "数码", "category": "数码", "count": 0, "hint": "荣耀手机"},
+        {"value": "游戏", "category": "游戏", "count": 0, "hint": "游戏"},
+    ],
+}
+
 
 def _build_candidate_map() -> dict[str, dict]:
     """Build a map of ambiguous terms to their possible meanings from product data.
@@ -108,13 +127,12 @@ async def disambiguate(
     # Try to resolve each ambiguous field
     resolved_entities = {**entities}
     unresolved = []
+    raw_query = entities.get("_raw_query", "")
 
     for field in ambiguous_fields:
         value = entities.get(field)
-        if value is None:
-            continue
 
-        result = await _resolve_field(field, value, conversation_context)
+        result = await _resolve_field(field, value, conversation_context, raw_query=raw_query)
         if result["resolved"]:
             resolved_entities[field] = result["value"]
             logger.info("field_resolved", field=field, original=value, resolved=result["value"])
@@ -137,6 +155,10 @@ async def disambiguate(
         }
 
     # Build combined question for all unresolved fields
+    # Store disambiguation question in entities for clarification engine to use
+    disambig_questions = [u["question"] for u in unresolved if u["question"]]
+    if disambig_questions:
+        resolved_entities["_disambiguation_question"] = " ".join(disambig_questions)
     questions = [u["question"] for u in unresolved if u["question"]]
     all_candidates = []
     for u in unresolved:
@@ -154,14 +176,29 @@ async def _resolve_field(
     field: str,
     value: str,
     context: list[dict] | None,
+    raw_query: str = "",
 ) -> dict:
     """Try to resolve a single ambiguous field.
+
+    Args:
+        field: The field name (e.g. "category", "brand")
+        value: The extracted value (may be None if LLM detected ambiguity but couldn't assign)
+        context: Conversation context
+        raw_query: Original user input (used when value is None)
 
     Returns:
         {"resolved": bool, "value": any, "candidates": list, "question": str|None}
     """
+    # When value is None, use raw_query to find candidates
+    search_term = value or raw_query
+    if not search_term:
+        return {"resolved": False, "value": value, "candidates": [], "question": None}
+
+    if value is None:
+        logger.info("field_value_none", field=field, using_raw_query=raw_query)
+
     # Strategy 1: Check product catalog for candidates
-    candidates = _get_catalog_candidates(field, value)
+    candidates = _get_catalog_candidates(field, search_term)
 
     if not candidates:
         return {"resolved": False, "value": value, "candidates": [], "question": None}
@@ -173,17 +210,17 @@ async def _resolve_field(
 
     # Strategy 2: Use conversation context
     if context:
-        context_resolved = _resolve_from_context(field, value, candidates, context)
+        context_resolved = _resolve_from_context(field, search_term, candidates, context)
         if context_resolved:
             return {"resolved": True, "value": context_resolved, "candidates": candidates, "question": None}
 
     # Strategy 3: Use LLM to disambiguate
-    llm_resolved = await _resolve_via_llm(field, value, candidates, context)
+    llm_resolved = await _resolve_via_llm(field, search_term, candidates, context)
     if llm_resolved:
         return {"resolved": True, "value": llm_resolved, "candidates": candidates, "question": None}
 
     # Fallback: ask user
-    question = _build_question(field, value, candidates)
+    question = _build_question(field, search_term, candidates)
     return {"resolved": False, "value": value, "candidates": candidates, "question": question}
 
 
@@ -223,6 +260,19 @@ def _get_catalog_candidates(field: str, value: str) -> list[dict]:
                     for c in candidates:
                         if c["value"] == cat:
                             c["count"] += 1
+
+    # Fallback: check static ambiguous term map (exact or substring match)
+    if not candidates:
+        if value in _AMBIGUOUS_TERM_MAP:
+            candidates = list(_AMBIGUOUS_TERM_MAP[value])
+            logger.info("using_static_fallback", term=value, candidates=len(candidates))
+        else:
+            # Substring match: "我要苹果" contains "苹果"
+            for term, term_candidates in _AMBIGUOUS_TERM_MAP.items():
+                if term in value:
+                    candidates = list(term_candidates)
+                    logger.info("using_static_fallback", term=term, candidates=len(candidates))
+                    break
 
     return candidates
 
@@ -293,6 +343,8 @@ async def _resolve_via_llm(
 
     try:
         result = await llm.chat_json(messages)
+        if not result:
+            return None
         resolved = result.get("result") or result.get("value")
         if resolved and resolved != "null":
             # Verify it's a valid candidate
@@ -313,7 +365,15 @@ def _build_question(field: str, value: str, candidates: list[dict]) -> str:
         )
         return f"你说的'{value}'是指{options}？"
     elif field == "category":
-        options = "还是".join(c["value"] for c in candidates[:3])
+        # Use hint if available for clearer options
+        parts = []
+        for c in candidates[:3]:
+            hint = c.get("hint", "")
+            if hint:
+                parts.append(f"{c['value']}（{hint}）")
+            else:
+                parts.append(c["value"])
+        options = "还是".join(parts)
         return f"你说的'{value}'是指{options}？"
     else:
         options = "还是".join(c["value"] for c in candidates[:3])

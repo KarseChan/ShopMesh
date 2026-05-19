@@ -686,6 +686,11 @@ Phase 5  简历包装          Week 11-12
   - **采用**：Qdrant 检索时直接传入 Payload 过滤条件，HNSW 遍历中跳过不满足条件的向量
   - **召回率**：~100%（所有满足条件的向量都参与排序）
   - **延迟**：~5ms（1000 条数据，与 FAISS 相当）
+- **过滤策略（开发中发现的关键问题）**：
+  - **简单过滤**（category/brand 精确匹配）：通过 `dict → MatchValue` 转换，传入 `store.search(filters=...)`
+  - **复杂过滤**（price Range 等）：通过 `build_filter` 生成 Qdrant Filter 对象，使用 `_search_with_complex_filter` 直接调用 Qdrant client
+  - **优先级**：当 `qdrant_filter` 存在时必须优先使用（包含 price 范围约束），不能跳过。否则 price_max 过滤形同虚设
+  - **调试日志**：记录 `filter_built`（过滤条件）、`semantic_search`（无过滤结果）、`filtered_results`（过滤后结果）、`hybrid_search`（最终汇总）
 - **产出**：
   - `src/retrieval/hybrid_retriever.py`：一步式混合检索（Qdrant search + Payload filter）
   - `src/retrieval/filter_builder.py`：LLM 输出 → Qdrant Filter 条件转换
@@ -703,6 +708,11 @@ Phase 5  简历包装          Week 11-12
   - 权重配置（默认权重 + 用户偏好调整）
   - 加权融合算法
   - 排序结果可解释化（每个商品附带排序依据）
+- **后过滤策略**（排序后执行，确保结果符合用户约束）：
+  1. **场景过滤**（`src/agents/scenario_filter.py`）：根据用户场景（如"送礼物"）映射品类白名单/黑名单，剔除不适配品类。例如礼物场景排除 {奶茶, 食品, 家居}，仅保留 {护肤, 数码, 服饰, 运动}
+  2. **预算过滤**：剔除 `final_price > price_max` 的商品（促销后价格仍超预算）
+  3. **异常价格过滤**：剔除 `is_abnormal=True` 的商品（单价 1 元运费 50 元等陷阱）
+  4. **执行顺序**：场景过滤 → 预算过滤 → 异常过滤（场景过滤先执行，减少后续处理量）
 
 ### T2.5 促销规则解析（3 种精心构造的促销类型）
 - **描述**：实现 3 种促销类型，分别支撑工具调用、澄清引擎、安全防护三个架构亮点

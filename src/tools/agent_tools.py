@@ -17,6 +17,8 @@ _RELAXATION_STEPS = [
     ("price_min", "去掉价格下限"),
     ("scenario", "去掉场景限制"),
     ("preference", "去掉偏好限制"),
+    ("product_type", "去掉商品类型限制"),
+    ("category", "去掉品类硬过滤"),
 ]
 
 
@@ -27,7 +29,9 @@ async def constraint_relaxation(entities: dict, failed_reason: str) -> dict:
     1. Remove brand restriction
     2. Expand/remove price range
     3. Remove scenario restriction
-    4. Keep only category
+    4. Remove preference
+    5. Remove product_type
+    6. Remove category (last resort)
 
     Args:
         entities: Current structured entities

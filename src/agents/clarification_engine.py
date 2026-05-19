@@ -1,7 +1,7 @@
 """Clarification Engine — ask clarifying questions based on information gaps.
 
 Strategy: priority = missing_degree x discrimination_power
-Stop conditions: candidates < 20 or rounds >= 3
+Stop conditions: rounds >= 3 or no more high-priority questions
 """
 
 from src.observability.logger import get_logger
@@ -9,31 +9,55 @@ from src.tools.search_tool import load_products
 
 logger = get_logger("clarification_engine")
 
-# Fields that can be asked about, with their question templates
+# Fields that can be asked about, with their question templates and clickable options
 QUESTION_TEMPLATES = {
     "category": {
-        "question": "你想找什么类型的商品？比如护肤、数码、服饰、食品等",
+        "question": "你想找什么类型的商品？",
+        "options": ["护肤", "数码", "服饰", "食品", "家居", "母婴"],
         "priority_weight": 1.0,
+        "applies_to": None,  # all categories
     },
     "brand": {
         "question": "有偏好的品牌吗？",
+        "options": [],
         "priority_weight": 0.7,
+        "applies_to": None,
     },
     "price_max": {
         "question": "你的预算大概是多少？",
+        "options": ["100以内", "100-300", "300-500", "500-1000", "1000以上"],
         "priority_weight": 0.9,
+        "applies_to": None,
     },
     "price_min": {
         "question": "你期望的最低价位是多少？",
+        "options": [],
         "priority_weight": 0.5,
+        "applies_to": None,
     },
     "scenario": {
-        "question": "是自己用还是送人？什么场景下使用？",
+        "question": "是自己用还是送人？",
+        "options": ["自己用", "送人", "公司采购"],
         "priority_weight": 0.6,
+        "applies_to": None,
     },
     "quantity": {
         "question": "你大概需要多少件？",
+        "options": ["1件", "2-3件", "5件以上"],
         "priority_weight": 0.4,
+        "applies_to": None,
+    },
+    "skin_type": {
+        "question": "你的肤质是？",
+        "options": ["油皮/混油", "干皮/混干", "敏感肌", "不太清楚"],
+        "priority_weight": 0.95,
+        "applies_to": ["护肤"],
+    },
+    "concerns": {
+        "question": "主要想解决什么问题？",
+        "options": ["补水保湿", "控油祛痘", "抗老紧致", "提亮肤色"],
+        "priority_weight": 0.9,
+        "applies_to": ["护肤"],
     },
 }
 
@@ -98,6 +122,8 @@ def _get_discrimination_power(entities: dict, field: str) -> float:
         distinct = 3  # default estimate
     elif field == "quantity":
         distinct = 2  # less discriminating
+    elif field in ("skin_type", "concerns"):
+        distinct = 4  # high discrimination for personalized questions
     else:
         distinct = 1
 
@@ -105,11 +131,12 @@ def _get_discrimination_power(entities: dict, field: str) -> float:
     return min(distinct / 5.0, 1.0)
 
 
-def _select_question(entities: dict, asked_fields: list[str]) -> str | None:
-    """Select the highest-priority question to ask next."""
-    candidates = _count_candidates(entities)
-    best_field = None
-    best_priority = -1.0
+def _select_questions(entities: dict, asked_fields: list[str], max_questions: int = 3) -> list[dict]:
+    """Select up to max_questions high-priority questions to ask.
+
+    Returns list of {"field": str, "question": str, "options": list[str]}.
+    """
+    candidates = []
 
     for field, template in QUESTION_TEMPLATES.items():
         # Skip if already has value or already asked
@@ -122,80 +149,83 @@ def _select_question(entities: dict, asked_fields: list[str]) -> str | None:
         if field == "price_min" and entities.get("price_max"):
             continue
 
+        # Skip if question doesn't apply to current category
+        applies_to = template.get("applies_to")
+        if applies_to and entities.get("category") not in applies_to:
+            continue
+
         # Calculate priority
-        missing_degree = 1.0  # field is missing
+        missing_degree = 1.0
         disc_power = _get_discrimination_power(entities, field)
         priority = missing_degree * disc_power * template["priority_weight"]
 
-        if priority > best_priority:
-            best_priority = priority
-            best_field = field
+        candidates.append({
+            "field": field,
+            "question": template["question"],
+            "options": template.get("options", []),
+            "priority": priority,
+        })
 
-    if best_field is None:
-        return None
-    return QUESTION_TEMPLATES[best_field]["question"]
+    # Sort by priority descending, take top N
+    candidates.sort(key=lambda x: x["priority"], reverse=True)
+    return [
+        {"field": c["field"], "question": c["question"], "options": c["options"]}
+        for c in candidates[:max_questions]
+        if c["priority"] > 0.1  # skip very low priority
+    ]
 
 
 async def should_clarify(entities: dict, asked_fields: list[str], round_num: int) -> dict:
-    """Decide whether to ask a clarifying question.
+    """Decide whether to ask clarifying questions.
 
     Returns:
         {
             "should_ask": bool,
-            "question": str or None,
+            "questions": list[{"field": str, "question": str, "options": list[str]}],
             "reason": str,
             "candidates": int,
         }
     """
     candidates = _count_candidates(entities)
 
-    # Stop condition 1: enough info, few candidates
-    if candidates <= 20:
-        logger.info("clarification_stop", reason="candidates_le_20", candidates=candidates)
-        return {
-            "should_ask": False,
-            "question": None,
-            "reason": "candidates_le_20",
-            "candidates": candidates,
-        }
-
-    # Stop condition 2: max rounds reached
+    # Stop condition 1: max rounds reached
     if round_num >= 3:
         logger.info("clarification_stop", reason="max_rounds", round_num=round_num)
         return {
             "should_ask": False,
-            "question": None,
+            "questions": [],
             "reason": "max_rounds",
             "candidates": candidates,
         }
 
-    # Stop condition 3: ambiguous entities need disambiguation first
+    # Stop condition 2: ambiguous entities need disambiguation first
     if entities.get("ambiguous"):
         disambig_q = _build_disambiguation_question(entities)
         if disambig_q:
             logger.info("clarification_ask", question=disambig_q, reason="disambiguation")
             return {
                 "should_ask": True,
-                "question": disambig_q,
+                "questions": [{"field": None, "question": disambig_q, "options": []}],
                 "reason": "disambiguation",
                 "candidates": candidates,
             }
 
-    # Select best question
-    question = _select_question(entities, asked_fields)
-    if question is None:
+    # Select questions (batch up to 3)
+    questions = _select_questions(entities, asked_fields, max_questions=3)
+    if not questions:
         logger.info("clarification_stop", reason="no_more_questions")
         return {
             "should_ask": False,
-            "question": None,
+            "questions": [],
             "reason": "no_more_questions",
             "candidates": candidates,
         }
 
-    logger.info("clarification_ask", question=question, candidates=candidates)
+    logger.info("clarification_ask", questions=[q["question"] for q in questions],
+                candidates=candidates)
     return {
         "should_ask": True,
-        "question": question,
+        "questions": questions,
         "reason": "missing_info",
         "candidates": candidates,
     }
@@ -203,6 +233,11 @@ async def should_clarify(entities: dict, asked_fields: list[str], round_num: int
 
 def _build_disambiguation_question(entities: dict) -> str | None:
     """Build a disambiguation question for ambiguous fields."""
+    # Use disambiguator's specific question if available
+    disambig_q = entities.get("_disambiguation_question")
+    if disambig_q:
+        return disambig_q
+
     ambiguous_fields = entities.get("ambiguous_fields", [])
     if not ambiguous_fields:
         return None

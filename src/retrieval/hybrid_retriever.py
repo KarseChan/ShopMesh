@@ -11,7 +11,7 @@ import random
 
 from src.models.embedder import get_embedder
 from src.observability.logger import get_logger
-from src.retrieval.filter_builder import build_filter
+from src.retrieval.filter_builder import build_filter, _expand_category
 from src.retrieval.vector_store import get_vector_store
 from src.config import config
 
@@ -62,25 +62,55 @@ async def hybrid_search(
 
     # Build payload filter from entities
     qdrant_filter = build_filter(entities)
+    simple_filters = _filter_to_dict(entities)
 
-    # One-step retrieval: semantic search + payload filter
-    results = await store.search(
-        collection=col,
-        query_vector=query_vector,
-        limit=top_k,
-        filters=_filter_to_dict(entities) if not qdrant_filter else None,
+    # Log the filter being applied (with product_type details)
+    product_type = entities.get("product_type")
+    category = entities.get("category")
+    normalized_categories = _expand_category(category, product_type) if (category or product_type) else []
+    logger.info("filter_built",
+                simple_filters=simple_filters,
+                has_complex_filter=qdrant_filter is not None,
+                product_type=product_type,
+                normalized_categories=normalized_categories,
+                product_type_filter_applied=product_type is not None)
+
+    # Always run unfiltered search for comparison
+    unfiltered_results = await store.search(
+        collection=col, query_vector=query_vector, limit=top_k,
     )
 
-    # If we have complex filters (range), apply via direct Qdrant client
-    if qdrant_filter and not results:
+    # Apply filters: prefer complex filter (includes price range), fallback to simple
+    if qdrant_filter:
         results = await _search_with_complex_filter(
             col, query_vector, qdrant_filter, top_k
         )
+    elif simple_filters:
+        results = await store.search(
+            collection=col, query_vector=query_vector, limit=top_k,
+            filters=simple_filters,
+        )
+    else:
+        results = unfiltered_results
 
     latency_ms = (time.time() - start) * 1000
 
+    # Log unfiltered results for comparison
+    logger.info("semantic_search",
+                results=len(unfiltered_results),
+                top_ids=[r["id"] for r in unfiltered_results[:5]])
+
+    # Log filtered results
+    logger.info("filtered_results",
+                results=len(results),
+                top_ids=[r["id"] for r in results[:5]])
+
+    # Log final merged result
     logger.info("hybrid_search", query_len=len(query),
-                results=len(results), latency_ms=round(latency_ms, 1))
+                unfiltered=len(unfiltered_results),
+                filtered=len(results),
+                final=len(results),
+                latency_ms=round(latency_ms, 1))
 
     return {
         "results": results,
@@ -95,6 +125,8 @@ def _filter_to_dict(entities: dict) -> dict | None:
     filters = {}
     if entities.get("category"):
         filters["category"] = entities["category"]
+    if entities.get("product_type"):
+        filters["product_type"] = entities["product_type"]
     if entities.get("brand"):
         filters["brand"] = entities["brand"]
     return filters if filters else None

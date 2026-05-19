@@ -34,7 +34,7 @@ async def product_search(
     search_result = await hybrid_search(semantic_query, entities, top_k=top_k)
     results = search_result["results"]
 
-    # Extract search scores for ranking
+    # Step 2: Extract search scores and products
     search_scores = [r.get("score", 0.5) for r in results]
     products = [r.get("payload", r) for r in results]
 
@@ -43,7 +43,7 @@ async def product_search(
         if "product_id" not in products[i]:
             products[i]["product_id"] = r.get("id", "")
 
-    # Step 2: Multi-objective ranking
+    # Step 3: Multi-objective ranking
     ranked = rank(products, search_scores=search_scores, entities=entities)
 
     logger.info("product_search_done",

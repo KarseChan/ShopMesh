@@ -179,3 +179,240 @@ else:
 6. **重建 Qdrant 索引** — 删除旧 collection，用 `scripts/build_index.py` 重新索引 50 条服装数据
 
 **状态**: 已修复
+
+---
+
+## P8: "服饰"大品类搜索零结果 — 品类体系不匹配（已修复）
+
+**发现时间**: 2026-05-19
+
+**现象**: 用户提问"我想买一件适合上班穿的衬衫，口碑好点，不要太贵"，前端回复"抱歉，暂时没有找到符合条件的商品，建议放宽筛选条件"。mock_data 中有 3 件衬衫（prod_002 H&M 商务免烫长袖衬衫、prod_003 ONLY 日系休闲亚麻短袖衬衫、prod_021 H&M 法式碎花雪纺衬衫），但全部未被召回。
+
+**根因**: 三层问题叠加。
+
+1. **Entity Extractor 输出粗粒度品类** — prompt 硬编码 8 个大品类（护肤/奶茶/数码/服饰/食品/家居/母婴/运动），"衬衫" 被映射为 `"category": "服饰"`，丢失了具体商品词信息
+2. **Filter Builder 品类展开失败** — `_expand_category("服饰")` 做前缀匹配，但商品库品类是 `"男装/上装/T恤衬衫"` 格式，没有以 "服饰" 开头的品类 → 兜底返回 `["服饰"]` → Qdrant `MatchValue(value="服饰")` 匹配 0 条
+3. **constraint_relaxation 链不含 category** — 放宽顺序是 brand → price → scenario → preference，category 不在其中，即使全部放宽完也救不了品类过滤错误
+
+**修复方案**: 三层修复。
+
+### 1. filter_builder.py — 品类标准化
+
+- 新增 `_BROAD_CATEGORY_MAP`：大品类 → 前缀映射（"服饰" → ["男装/", "女装/"]）
+- 新增 `_PRODUCT_TYPE_MAP`：商品词 → 实际品类映射（"衬衫" → ["男装/上装/T恤衬衫", "女装/上装/衬衫外套"]）
+- `_expand_category(category, product_type)` 改为双参数，优先使用 product_type 精确映射
+- `build_filter` 读取 entities 中的 `product_type` 字段传入展开函数
+
+### 2. entity_extractor.py — 增加 product_type 字段
+
+- SYSTEM_PROMPT 新增 `"product_type": "具体商品词或null"` 字段定义
+- 引导 LLM 提取用户提到的具体商品词（衬衫/T恤/外套/面膜等）
+- 输出 normalization 和 fallback 均包含 product_type
+
+### 3. agent_tools.py — 放宽链增加 category
+
+- `_RELAXATION_STEPS` 末尾新增 `("product_type", "去掉商品类型限制")` 和 `("category", "去掉品类硬过滤")`
+- 作为最后手段，当前面所有放宽都无效时才去掉品类过滤
+
+**修复后预期流程**:
+
+```
+用户: "我想买一件适合上班穿的衬衫，口碑好点，不要太贵"
+↓
+Entity Extractor:
+  category=服饰, product_type=衬衫, scenario=上班, preference=口碑好
+↓
+Filter Builder:
+  _expand_category("服饰", "衬衫") → ["男装/上装/T恤衬衫", "女装/上装/衬衫外套"]
+  Qdrant Filter: MatchAny(["男装/上装/T恤衬衫", "女装/上装/衬衫外套"])
+↓
+Hybrid Search: 召回衬衫品类商品
+↓
+Ranker: 排序（product_type 匹配 + 上班场景 + 口碑偏好）
+↓
+返回衬衫商品推荐
+```
+
+**状态**: 已修复
+
+---
+
+## P10: tool_executor 日志缺少关键参数，无法判断 Agent 决策链路（已修复）
+
+**发现时间**: 2026-05-19
+
+**现象**: 日志只有 `tool_executed tool=product_search result_type=dict`，无法看到 Agent 传了什么 entities、semantic_query，也不知道返回了哪些 product_id。排查"Agent 是主动挑了 Polo 还是工具结果顺序导致"时无从下手。
+
+**根因**: `tool_executor.py` 的 logger 只记录了 tool name 和 result type，没有记录 args 和 result 详情。
+
+**解决方案**: tool_executor 新增结构化日志，按 tool 类型提取关键字段。
+
+### 修改: src/graph/tool_executor.py
+
+1. `_TOOL_ARGS_LOG_FIELDS` — 定义每个 tool 需要记录的 args 字段：
+   - product_search: semantic_query + entities（仅 category/product_type/brand/scenario/preference/price，不含 user_id）
+   - product_detail_batch / price_compare / review_summary: product_ids
+   - constraint_relaxation: failed_reason
+   - ask_clarification: asked_fields
+
+2. `_TOOL_RESULT_LOG_FIELDS` — 定义每个 tool 需要记录的 result 字段：
+   - product_search: total + 前 5 个 product_ids
+   - product_detail_batch / review_summary: count + 前 5 个 product_ids
+   - constraint_relaxation: relaxed + steps_remaining
+   - ask_clarification: should_ask + question_count
+
+3. `_extract_args_for_log()` — 提取 args 并过滤 PII
+4. `_extract_result_for_log()` — 提取 result 关键字段
+
+**日志输出示例**:
+```
+tool_executed tool=product_search
+  args={semantic_query: "适合上班穿的衬衫", entities: {category: "服饰", product_type: "衬衫"}}
+  result={total: 3, product_ids: ["prod_003", "prod_021", "prod_002"]}
+```
+
+**状态**: 已修复 — 非衬衫商品排在衬衫前面（已修复）
+
+**发现时间**: 2026-05-19
+
+**现象**: 用户搜索"衬衫"，品类展开正确召回了 24 件商品，但排序结果中 T 恤、背心、Polo 衫排在衬衫前面：
+
+```
+rank 1: 优衣库 运动速干跑步背心
+rank 2: H&M 简约纯色V领T恤
+rank 3: 森马 美式复古印花圆领T恤
+rank 5: ONLY 日系休闲亚麻短袖衬衫  ← 真正的衬衫排到第 5
+rank 8: H&M 商务免烫长袖衬衫      ← 真正的衬衫排到第 8
+```
+
+前端最终推荐了"ONLY 经典翻领Polo衫"，不符合用户"衬衫"需求。
+
+**根因**: ranker 没有 product_type 匹配维度。
+
+1. **品类太粗** — "男装/上装/T恤衬衫" 品类内混有 T 恤、背心、Polo、卫衣、羽绒服等 12 种商品，只有 3 件是衬衫
+2. **ranker 不感知 product_type** — 排序只看 relevance/price/reputation/timeliness/personalization，没有"是否匹配用户要的商品类型"维度
+3. **非衬衫靠价格/相关度胜出** — T 恤价格低（¥82-91），相关度也不差（同品类语义相似），综合分高于衬衫
+
+**解决方案**: ranker 新增 product_type 匹配惩罚。
+
+### 修改: src/agents/ranker.py
+
+1. 新增 `_score_product_type_match(product, product_type)` 函数：
+   - 检查商品**名称 + 特征**中是否包含 product_type 关键词
+   - **不检查品类名**（品类 "T恤衬衫" 包含 "衬衫" 但不代表该商品是衬衫）
+   - 匹配 → 1.0，不匹配 → 0.1（强惩罚，score × 0.1）
+
+2. `rank()` 函数中：在 weighted fusion 之后，将 product_type_match 作为乘数应用于 composite score
+
+**修复后排序效果**:
+
+```
+#1 ✓ ONLY 日系休闲亚麻短袖衬衫   ¥133  score=0.77  pt_match=1.0
+#2 ✓ H&M 法式碎花雪纺衬衫        ¥160  score=0.76  pt_match=1.0
+#3 ✓ H&M 商务免烫长袖衬衫        ¥185  score=0.73  pt_match=1.0
+#4 ✗ 优衣库 运动速干跑步背心       ¥95  score=0.08  pt_match=0.1
+#5 ✗ H&M 简约纯色V领T恤           ¥91  score=0.08  pt_match=0.1
+```
+
+衬衫 Top 3，非衬衫被 0.1x 惩罚压到底部。
+
+**状态**: 已修复
+
+**发现时间**: 2026-05-19
+
+**现象**: 测试"我想买一件适合上班穿的衬衫"时，日志出现 3 次 ranker 排序调用。
+
+**根因**: 两层重试机制叠加。
+
+1. **product_search 内部重试**（P8 修复时引入）— 0 结果时自动去掉 category filter 重试一次，每次调用 rank() → 2 次
+2. **Agent ReAct 循环**（原有）— Agent 不知道内部重试已找到结果，仍调用 constraint_relaxation + product_search → 再 1 次
+
+总 rank() 调用 = 3 次。
+
+**解决方案**: 去掉 product_search 内部重试机制，让 Agent 统一控制决策流。product_search 只负责单次检索+排序，重试逻辑完全由 ReAct 循环通过 constraint_relaxation 管理。
+
+修正后流程（rank() 只调用 1 次）：
+```
+ReAct 轮次 1: product_search → filter_builder 展开品类 → hybrid_search → rank() ①
+ReAct 轮次 2: Agent 看到结果 → 直接生成 Final Answer
+```
+
+**状态**: 已修复
+
+---
+
+## P11: mock_data 品类体系混乱 + 缺少 product_type 字段（已修复）
+
+**发现时间**: 2026-05-19
+
+**现象**: 多个排序和过滤问题的根源指向数据质量：
+1. 品类字段混合了"类型"和"子品类"（如 "男装/上装/T恤衬衫"），导致品类展开和匹配逻辑复杂且易出错
+2. 缺少 `product_type` 结构化字段，ranker 无法精确区分衬衫/T恤/Polo 衫
+3. `embedding_text` 使用旧品类名（"T恤衬衫"），污染向量语义
+
+**根因**: mock_data 设计时没有区分"品类"（粗粒度分类）和"商品类型"（具体商品词），将两者混在同一个 category 字段中。
+
+**解决方案**: 数据重新设计 + 重建索引。
+
+### 1. scripts/generate_clothing_data.py — 新数据生成脚本
+
+- category 简化为 4 个干净品类：`男装/上装`、`男装/下装`、`女装/上装`、`女装/下装`
+- 新增 `product_type` 字段：衬衫、T恤、Polo 衫、背心、卫衣、夹克、牛仔裤、西裤、休闲裤、短裤、半身裙、长裙等 23 种
+- `embedding_text` 改为 `category + product_type + name + features`，不再使用旧混合品类
+- 50 条商品，覆盖男装女装上下装
+
+### 2. data/mock_data.json — 重新生成
+
+旧数据 → 新数据对比：
+
+| 字段 | 旧 | 新 |
+|------|------|------|
+| category | "男装/上装/T恤衬衫" | "男装/上装" |
+| product_type | 无 | "衬衫" |
+| embedding_text | "男装/上装/T恤衬衫 商务免烫..." | "男装/上装 衬衫 H&M 商务免烫长袖衬衫 棉 免烫..." |
+
+### 3. scripts/build_index.py — payload 增加 product_type
+
+Qdrant payload 新增 `product_type` 字段，支持结构化过滤。
+
+### 4. 联动修改
+
+- `filter_builder.py` — `_PRODUCT_TYPE_MAP` 更新为新品类格式
+- `test_p8_shirt_search.py` — 测试断言更新为新品类
+
+**状态**: 已修复
+
+---
+
+## P12: hybrid_retriever 日志缺少 product_type 过滤信息（已修复）
+
+**发现时间**: 2026-05-19
+
+**现象**: hybrid_retriever 的 `filter_built` 日志只显示 `"simple_filters": {"category": "服饰"}`，无法看到：
+1. product_type 是否被提取和过滤
+2. 品类展开后的实际匹配列表（normalized_categories）
+3. product_type 过滤是否生效
+
+**根因**: `_filter_to_dict()` 只提取 category 和 brand，不提取 product_type。`filter_built` 日志不记录展开后的品类列表。
+
+**解决方案**: 两处修改。
+
+### 修改: src/retrieval/hybrid_retriever.py
+
+1. `_filter_to_dict()` — 新增 `product_type` 字段提取
+2. `filter_built` 日志 — 新增三个字段：
+   - `product_type`: 原始 product_type 值（如 "衬衫"）
+   - `normalized_categories`: `_expand_category()` 展开后的品类列表（如 ["男装/上装", "女装/上装"]）
+   - `product_type_filter_applied`: bool，是否有 product_type 参与过滤
+
+**日志输出示例**:
+```
+filter_built
+  simple_filters={category: "服饰", product_type: "衬衫"}
+  has_complex_filter=true
+  product_type="衬衫"
+  normalized_categories=["男装/上装", "女装/上装"]
+  product_type_filter_applied=true
+```
+
+**状态**: 已修复

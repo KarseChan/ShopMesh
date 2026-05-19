@@ -11,6 +11,39 @@ from src.tools.search_tool import load_products
 # Cache for available categories
 _CATEGORIES_CACHE: list[str] | None = None
 
+# Broad category → prefix mapping (entity extractor outputs these)
+_BROAD_CATEGORY_MAP: dict[str, list[str]] = {
+    "服饰": ["男装/", "女装/"],
+    "衣服": ["男装/", "女装/"],
+    "服装": ["男装/", "女装/"],
+    "男装": ["男装/"],
+    "女装": ["女装/"],
+}
+
+# Product type → actual categories (for precise matching)
+_PRODUCT_TYPE_MAP: dict[str, list[str]] = {
+    "衬衫": ["男装/上装", "女装/上装"],
+    "T恤": ["男装/上装", "女装/上装"],
+    "Polo衫": ["男装/上装"],
+    "背心": ["男装/上装", "女装/上装"],
+    "卫衣": ["男装/上装", "女装/上装"],
+    "外套": ["男装/上装", "女装/上装"],
+    "夹克": ["男装/上装"],
+    "西装": ["女装/上装"],
+    "针织衫": ["男装/上装", "女装/上装"],
+    "羽绒服": ["男装/上装", "女装/上装"],
+    "裤子": ["男装/下装", "女装/下装"],
+    "裤装": ["男装/下装", "女装/下装"],
+    "牛仔裤": ["男装/下装", "女装/下装"],
+    "西裤": ["男装/下装", "女装/下装"],
+    "休闲裤": ["男装/下装", "女装/下装"],
+    "短裤": ["男装/下装"],
+    "裙子": ["女装/下装"],
+    "裙装": ["女装/下装"],
+    "半身裙": ["女装/下装"],
+    "长裙": ["女装/下装"],
+}
+
 
 def _get_all_categories() -> list[str]:
     """Get all unique categories from product data."""
@@ -21,22 +54,48 @@ def _get_all_categories() -> list[str]:
     return _CATEGORIES_CACHE
 
 
-def _expand_category(category: str) -> list[str]:
-    """Expand a category prefix to all matching full categories.
+def _expand_category(category: str | None, product_type: str | None = None) -> list[str]:
+    """Expand a category to all matching full categories.
+
+    Expansion priority:
+    1. product_type → direct mapping (e.g., "衬衫" → ["男装/上装/T恤衬衫", ...])
+    2. category → broad prefix map (e.g., "服饰" → ["男装/", "女装/"])
+    3. category → prefix match on actual categories
+    4. category → exact match
+    5. Fallback to original
 
     Examples:
-        "服饰" → ["男装/上装/T恤衬衫", "男装/下装/裤装", "女装/上装/衬衫外套", ...]
-        "男装" → ["男装/上装/T恤衬衫", "男装/下装/裤装", ...]
-        "男装/上装" → ["男装/上装/T恤衬衫", "男装/上装/外套", ...]
-        "男装/上装/T恤衬衫" → ["男装/上装/T恤衬衫"] (exact)
+        ("服饰", "衬衫") → ["男装/上装/T恤衬衫", "女装/上装/衬衫外套"]
+        ("服饰", None) → ["男装/上装/T恤衬衫", "男装/下装/裤装", ...]
+        ("男装", None) → ["男装/上装/T恤衬衫", "男装/下装/裤装", ...]
+        (None, "衬衫") → ["男装/上装/T恤衬衫", "女装/上装/衬衫外套"]
     """
     all_cats = _get_all_categories()
-    # Exact match first
-    if category in all_cats:
-        return [category]
-    # Prefix match
-    matched = [c for c in all_cats if c.startswith(category)]
-    return matched if matched else [category]  # fallback to original if no match
+    candidates = []
+
+    # 1. product_type direct mapping (most precise, highest priority)
+    if product_type and product_type in _PRODUCT_TYPE_MAP:
+        candidates.extend(_PRODUCT_TYPE_MAP[product_type])
+
+    # 2. Broad category map (only if product_type didn't narrow it down)
+    if not candidates and category and category in _BROAD_CATEGORY_MAP:
+        prefixes = _BROAD_CATEGORY_MAP[category]
+        for c in all_cats:
+            if any(c.startswith(p) for p in prefixes):
+                candidates.append(c)
+
+    # 3. Prefix match on actual categories
+    if not candidates and category:
+        matched = [c for c in all_cats if c.startswith(category)]
+        if matched:
+            candidates.extend(matched)
+
+    # 4. Exact match
+    if category and not candidates and category in all_cats:
+        candidates.append(category)
+
+    # Deduplicate preserving order
+    return list(dict.fromkeys(candidates)) if candidates else ([category] if category else [])
 
 
 def build_filter(entities: dict) -> Filter | None:
@@ -51,14 +110,12 @@ def build_filter(entities: dict) -> Filter | None:
     """
     conditions = []
 
-    # Category filter: prefix match for hierarchical categories
-    # e.g., "男装" matches "男装/上装/T恤衬衫", "男装/下装/裤装"
-    # e.g., "男装/上装" matches "男装/上装/T恤衬衫"
+    # Category filter: expand broad categories + product_type to actual categories
+    # e.g., ("服饰", "衬衫") → MatchAny(["男装/上装/T恤衬衫", "女装/上装/衬衫外套"])
     category = entities.get("category")
-    if category:
-        # Use MatchText for prefix-like matching on category field
-        # MatchText does full-text match, but we can use MatchAny with expanded categories
-        expanded = _expand_category(category)
+    product_type = entities.get("product_type")
+    if category or product_type:
+        expanded = _expand_category(category, product_type)
         if len(expanded) > 1:
             conditions.append(FieldCondition(
                 key="category", match=MatchAny(any=expanded)

@@ -4,14 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-基于 LangGraph 的智能导购系统，正在从固定 Pipeline 工作流改造为**混合式 Agent 架构**（确定性预处理 + ReAct 动态决策）。
+基于 LangGraph 的智能导购系统，已从固定 Pipeline 工作流改造为**混合式 Agent 架构**（确定性预处理 + ReAct 动态决策）。
 
-**当前任务**: 参照 `reports/转化agent任务规划.md` 执行工作流 → Agent 转化。分 5 个阶段：
-1. 确定性预处理 + 工具化（T1.1-T1.9）
-2. ReAct Agent 核心（T2.1-T2.6）
-3. 动态决策增强（T3.1-T3.4）
-4. API 与前端适配（T4.1-T4.2）
-5. 测试与验证（T5.1-T5.3）
+**当前阶段**: 主体开发已完成，进入**业务测试与迭代**阶段。根据实际导购场景测试结果，修复问题、优化体验。问题记录见 `reports/` 目录。
+
+**已完成的开发阶段**:
+1. 确定性预处理 + 工具化（T1.1-T1.9）✅
+2. ReAct Agent 核心（T2.1-T2.6）✅
+3. 动态决策增强（T3.1-T3.4）✅
+4. API 与前端适配（T4.1-T4.2）✅
+5. 测试与验证（T5.1-T5.3）✅
 
 **目标架构**:
 ```
@@ -151,6 +153,7 @@ L2c vector memory: per-user Qdrant collection `memory_{user_id}`. Triggered by r
 - **Commit messages**: `<动词>: <简述>` (e.g., `fix: 修复 LLM JSON 解析失败`)
 - **Problem reports**: write issue + fix to `reports/problem.md` after each fix
 - **Development pace**: controlled by user, do not auto-advance to next task
+- **测试阶段原则**: 以业务场景测试驱动，发现问题就地修复，每次修复后记录到 reports/
 - **转化原则**: 原有工作流函数（shopping_graph.py 及其依赖的 agents/）**不删除、不修改**，只额外新增 Tools 和新 Graph。新旧架构可共存，通过 API 切换
 
 ## Forbidden
