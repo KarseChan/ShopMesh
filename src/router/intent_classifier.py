@@ -13,13 +13,14 @@ logger = get_logger("intent_classifier")
 
 
 def _get_threshold() -> float:
-    return config.get("semantic_router", {}).get("threshold", 0.80)
+    return config.get("router", {}).get("semantic_threshold", 0.80)
 
 
 async def classify_intent(query: str) -> tuple[str, float, str]:
     """Classify intent: Semantic Router first, LLM fallback if low confidence.
 
     Returns (intent, confidence, source) where source is "semantic" or "llm".
+    If both layers fail, defaults to "search" with 0.0 confidence.
     """
     threshold = _get_threshold()
 
@@ -32,5 +33,11 @@ async def classify_intent(query: str) -> tuple[str, float, str]:
     # Slow path: LLM Fallback
     intent, confidence = await llm_router.classify(query)
     source = "llm"
+
+    # Final fallback: if both layers return empty, default to "search"
+    if not intent:
+        intent, confidence = "search", 0.0
+        source = "default"
+
     logger.info("intent_resolved", intent=intent, confidence=confidence, source=source)
     return intent, confidence, source

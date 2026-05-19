@@ -46,17 +46,42 @@ async def product_search(
     # Step 3: Multi-objective ranking
     ranked = rank(products, search_scores=search_scores, entities=entities)
 
+    # Step 4: Split exact vs supplemental matches
+    product_type = entities.get("product_type")
+    exact_ids, supplemental_ids = _split_matches(ranked, product_type)
+
     logger.info("product_search_done",
                 total=len(ranked),
+                exact=len(exact_ids),
+                supplemental=len(supplemental_ids),
                 filter_applied=search_result["filter_applied"],
                 latency_ms=search_result["latency_ms"])
 
     return {
         "results": ranked,
         "total": len(ranked),
+        "exact_matches": exact_ids,
+        "supplemental_matches": supplemental_ids,
         "filter_applied": search_result["filter_applied"],
         "latency_ms": search_result["latency_ms"],
     }
+
+
+def _split_matches(ranked: list[dict], product_type: str | None) -> tuple[list[str], list[str]]:
+    """Split results into exact matches (product_type matches) and supplemental."""
+    if not product_type:
+        # No product_type constraint → all are exact
+        return [p.get("product_id", "") for p in ranked], []
+
+    exact, supplemental = [], []
+    for p in ranked:
+        pid = p.get("product_id", "")
+        pt_score = p.get("rank_reasons", {}).get("product_type_match", 0)
+        if pt_score >= 0.9:
+            exact.append(pid)
+        else:
+            supplemental.append(pid)
+    return exact, supplemental
 
 
 # Register as Agent Tool

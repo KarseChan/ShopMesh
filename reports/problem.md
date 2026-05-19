@@ -618,3 +618,47 @@ if entities.get("gender"):
 **验证**: 36/36 测试通过（test_p8_shirt_search.py 18 个 + test_t24.py 18 个），含新增的 `test_keyword_match_score_partial` 测试。
 
 **状态**: 已修复
+
+---
+
+## P18: intent_classifier 输出空 intent + product_search 缺少 exact/supplemental 区分
+
+**发现时间**: 2026-05-19
+
+**现象**: 预处理输出 `"intent": "", "confidence": 0.0`，应为 `"search"`。虽然后续 Agent 仍正常调用 product_search，不影响主流程，但属于预处理异常。
+
+**根因**: 两个独立问题：
+
+1. **classify_intent 无兜底** — semantic_router 返回空 → llm_router 异常/返回空 → 直接返回 `("", 0.0)`，没有最终默认值
+2. **config key 读取错误** — `intent_classifier._get_threshold()` 读 `config["semantic_router"]["threshold"]`（不存在），实际配置是 `router.semantic_threshold`
+
+**解决方案**:
+
+### 1. classify_intent 兜底默认值（intent_classifier.py）
+
+两层都返回空时，默认返回 `"search"` + 0.0 confidence + source="default"：
+
+```python
+if not intent:
+    intent, confidence = "search", 0.0
+    source = "default"
+```
+
+### 2. config key 修正（intent_classifier.py）
+
+```python
+# 修正前
+return config.get("semantic_router", {}).get("threshold", 0.80)
+# 修正后
+return config.get("router", {}).get("semantic_threshold", 0.80)
+```
+
+### 3. product_search 区分 exact/supplemental（product_search.py）
+
+新增 `_split_matches(ranked, product_type)`：
+- `exact_matches`: product_type_match >= 0.9（名称或类型字段直接匹配）
+- `supplemental_matches`: product_type_match < 0.9（属性匹配但类型不符）
+
+返回结果新增 `exact_matches` 和 `supplemental_matches` 列表。
+
+**状态**: 已修复
