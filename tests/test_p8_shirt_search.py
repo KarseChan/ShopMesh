@@ -184,8 +184,9 @@ async def test_keyword_match_score_direct_hit():
     """关键词直接命中。"""
     from src.agents.ranker import _keyword_match_score
 
-    score = _keyword_match_score("免烫", "H&M 商务免烫长袖衬衫 棉 免烫 商务")
+    score, matched = _keyword_match_score("免烫", "H&M 商务免烫长袖衬衫 棉 免烫 商务")
     assert score == 1.0
+    assert "免烫" in matched
 
 
 @pytest.mark.asyncio
@@ -193,8 +194,9 @@ async def test_keyword_match_score_synonym():
     """同义词命中：'不容易皱' → '免烫'。"""
     from src.agents.ranker import _keyword_match_score
 
-    score = _keyword_match_score("不容易皱", "H&M 商务免烫长袖衬衫 棉 免烫 商务")
+    score, matched = _keyword_match_score("不容易皱", "H&M 商务免烫长袖衬衫 棉 免烫 商务")
     assert score > 0  # "不容易皱" 的同义词包含 "免烫"
+    assert len(matched) > 0
 
 
 @pytest.mark.asyncio
@@ -202,8 +204,18 @@ async def test_keyword_match_score_miss():
     """完全不命中。"""
     from src.agents.ranker import _keyword_match_score
 
-    score = _keyword_match_score("防水冲锋衣", "H&M 商务免烫长袖衬衫 棉 免烫 商务")
+    score, matched = _keyword_match_score("防水冲锋衣", "H&M 商务免烫长袖衬衫 棉 免烫 商务")
     assert score == 0.0
+    assert matched == []
+
+
+@pytest.mark.asyncio
+async def test_keyword_match_score_partial():
+    """部分匹配：'夏天穿' 包含 '夏天'，应命中透气/速干等。"""
+    from src.agents.ranker import _keyword_match_score
+
+    score, matched = _keyword_match_score("夏天穿", "ONLY 日系休闲亚麻短袖衬衫 亚麻 透气 休闲 短袖")
+    assert score > 0, f"应命中夏天的同义词，实际: score={score}, matched={matched}"
 
 
 @pytest.mark.asyncio

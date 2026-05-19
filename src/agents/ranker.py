@@ -133,15 +133,13 @@ def _build_product_text(product: dict) -> str:
     return " ".join(parts)
 
 
-def _keyword_match_score(req_text: str, product_text: str) -> float:
+def _keyword_match_score(req_text: str, product_text: str) -> tuple[float, list[str]]:
     """Score how well a requirement matches product text.
 
-    1. Split req_text into keywords
-    2. For each keyword, check direct match + synonym expansion
-    3. Return hit rate (hits / total keywords)
+    Returns (score, matched_terms) where matched_terms lists what was hit.
     """
     if not req_text or not product_text:
-        return 0.0
+        return 0.0, []
 
     product_lower = product_text.lower()
 
@@ -150,56 +148,85 @@ def _keyword_match_score(req_text: str, product_text: str) -> float:
     keywords = [kw for kw in keywords if kw]
 
     if not keywords:
-        return 0.0
+        return 0.0, []
 
     synonyms = _load_synonyms()
     hits = 0
+    matched_terms = []
 
     for kw in keywords:
         kw_lower = kw.lower()
-        # Direct match
+        # 1. Direct match
         if kw_lower in product_lower:
             hits += 1
+            matched_terms.append(kw)
             continue
-        # Synonym expansion: check if any synonym of kw appears in product
+        # 2. Exact synonym lookup
         syns = synonyms.get(kw, [])
-        if any(s.lower() in product_lower for s in syns):
+        matched_syn = _find_in_product(syns, product_lower)
+        if matched_syn:
             hits += 1
+            matched_terms.append(matched_syn)
             continue
-        # Reverse check: if kw is a synonym of some key, check the key
+        # 3. Partial match: kw contains a synonym key (e.g. "夏天穿" contains "夏天")
+        partial_matched = False
         for key, syn_list in synonyms.items():
-            if kw_lower == key.lower() or kw_lower in [s.lower() for s in syn_list]:
-                # kw is in synonym table; check if key or any sibling synonym is in product
-                if key.lower() in product_lower:
+            if key in kw_lower:
+                # kw contains a synonym key — check if key or its synonyms appear in product
+                matched_syn = _find_in_product([key] + syn_list, product_lower)
+                if matched_syn:
                     hits += 1
+                    matched_terms.append(matched_syn)
+                    partial_matched = True
                     break
-                if any(s.lower() in product_lower for s in syn_list):
+        if partial_matched:
+            continue
+        # 4. Reverse: kw is itself a synonym value
+        for key, syn_list in synonyms.items():
+            if kw_lower in [s.lower() for s in syn_list]:
+                matched_syn = _find_in_product([key] + syn_list, product_lower)
+                if matched_syn:
                     hits += 1
+                    matched_terms.append(matched_syn)
                     break
 
-    return hits / len(keywords)
+    return hits / len(keywords), matched_terms
 
 
-def _score_attribute_match(product: dict, soft_requirements: list[dict]) -> float:
+def _find_in_product(terms: list[str], product_lower: str) -> str | None:
+    """Find the first term from a list that appears in product text."""
+    for t in terms:
+        if t.lower() in product_lower:
+            return t
+    return None
+
+
+def _score_attribute_match(
+    product: dict, soft_requirements: list[dict]
+) -> tuple[float, dict[str, list[str]]]:
     """Score product against all soft_requirements using keyword+synonym matching.
 
-    Returns weighted average of per-requirement match scores.
+    Returns (weighted_score, evidence) where evidence maps req_text → matched terms.
     """
     if not soft_requirements:
-        return 0.5
+        return 0.5, {}
 
     product_text = _build_product_text(product)
     total_score = 0.0
     total_weight = 0.0
+    evidence = {}
 
     for req in soft_requirements:
         req_text = req.get("text", "")
         importance = req.get("importance", 0.7)
-        score = _keyword_match_score(req_text, product_text)
+        score, matched = _keyword_match_score(req_text, product_text)
         total_score += score * importance
         total_weight += importance
+        if matched:
+            evidence[req_text] = matched
 
-    return total_score / total_weight if total_weight > 0 else 0.5
+    final_score = total_score / total_weight if total_weight > 0 else 0.5
+    return final_score, evidence
 
 
 # --- Dimension Scoring Functions ---
@@ -299,10 +326,13 @@ def rank(
     for i, product in enumerate(products):
         search_score = scores[i] if i < len(scores) else 0.5
 
+        # Attribute match (returns score + evidence)
+        attr_score, attr_evidence = _score_attribute_match(product, soft_requirements)
+
         # 6 dimension scores
         reasons = {
             "product_type_match": round(_score_product_type_match(product, product_type), 3),
-            "attribute_match": round(_score_attribute_match(product, soft_requirements), 3),
+            "attribute_match": round(attr_score, 3),
             "relevance": round(_score_relevance(product, search_score), 3),
             "price": round(_score_price(product, products), 3),
             "reputation": round(_score_reputation(product), 3),
@@ -319,23 +349,30 @@ def rank(
         pt_match = reasons["product_type_match"]
         composite *= pt_match
 
-        ranked.append({
+        entry = {
             **product,
             "rank_score": round(composite, 4),
             "rank_reasons": reasons,
-        })
+        }
+        if attr_evidence:
+            entry["attribute_evidence"] = attr_evidence
+        ranked.append(entry)
 
     ranked.sort(key=lambda x: x["rank_score"], reverse=True)
 
     # Logging
     for i, p in enumerate(ranked):
-        logger.info("rank_detail",
-                    rank=i + 1,
-                    product_id=p.get("product_id", ""),
-                    name=p.get("name", ""),
-                    platform=p.get("platform_id", ""),
-                    rank_score=p["rank_score"],
-                    dimensions=p["rank_reasons"])
+        log_kwargs = {
+            "rank": i + 1,
+            "product_id": p.get("product_id", ""),
+            "name": p.get("name", ""),
+            "platform": p.get("platform_id", ""),
+            "rank_score": p["rank_score"],
+            "dimensions": p["rank_reasons"],
+        }
+        if "attribute_evidence" in p:
+            log_kwargs["attribute_evidence"] = p["attribute_evidence"]
+        logger.info("rank_detail", **log_kwargs)
 
     logger.info("ranked", count=len(ranked),
                 profile=profile_name,

@@ -129,6 +129,8 @@ def _filter_to_dict(entities: dict) -> dict | None:
         filters["category"] = entities["category"]
     if entities.get("product_type"):
         filters["product_type"] = entities["product_type"]
+    if entities.get("gender"):
+        filters["gender"] = entities["gender"]
     if entities.get("brand"):
         filters["brand"] = entities["brand"]
     return filters if filters else None

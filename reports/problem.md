@@ -566,3 +566,55 @@ matched = [by_id[pid] for pid in product_ids if pid in by_id]
 ```
 
 **状态**: 已修复
+
+---
+
+## P17: attribute_match 评分失效 + evidence 缺失 + gender 未透传
+
+**发现时间**: 2026-05-19
+
+**现象**: attribute_match 维度所有商品得分都是 0.5（baseline），软需求没有实际区分商品；rank 日志缺少 attribute_evidence 无法排查；simple_filters 没有 gender 字段。
+
+**根因**: 三个独立问题：
+
+1. **同义词部分匹配失败** — `_keyword_match_score("夏天穿", product_text)` 调用 `synonyms.get("夏天穿")` 返回空列表（key 是 "夏天"），直接命中和精确同义词查找都失败，返回 0.0
+2. **attribute_evidence 未返回** — `_score_attribute_match` 只返回 float 分数，不返回匹配证据；`rank()` 也没有把 evidence 附加到结果中
+3. **simple_filters 缺少 gender** — `_filter_to_dict` 只处理 category/brand/price，不处理 gender，导致无复杂 filter 时 gender 过滤丢失
+
+**解决方案**:
+
+### 1. 同义词部分匹配（ranker.py）
+
+`_keyword_match_score` 新增第 3 级匹配：遍历 synonym keys，检查 key 是否是 keyword 的子串。
+
+```python
+# 3. Partial match: kw contains a synonym key (e.g. "夏天穿" contains "夏天")
+for key, syn_list in synonyms.items():
+    if key in kw_lower:
+        matched_syn = _find_in_product([key] + syn_list, product_lower)
+        if matched_syn:
+            hits += 1
+            matched_terms.append(matched_syn)
+            break
+```
+
+返回类型从 `float` 改为 `tuple[float, list[str]]`，携带匹配证据。
+
+### 2. attribute_evidence 透传（ranker.py）
+
+- `_score_attribute_match` 返回 `(score, evidence)` 元组
+- `rank()` 解包后将 `attribute_evidence` 附加到排序结果
+- `rank_detail` 日志新增 `attribute_evidence` 字段
+
+### 3. gender 透传到 simple_filters（hybrid_retriever.py）
+
+`_filter_to_dict` 新增 gender 字段：
+
+```python
+if entities.get("gender"):
+    filters["gender"] = entities["gender"]
+```
+
+**验证**: 36/36 测试通过（test_p8_shirt_search.py 18 个 + test_t24.py 18 个），含新增的 `test_keyword_match_score_partial` 测试。
+
+**状态**: 已修复
