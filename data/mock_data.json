@@ -1041,6 +1041,384 @@
       ],
       "embedding_text": "女装/下装 牛仔裤 VERO MODA 冬季加绒紧身牛仔裤 牛仔 加绒 紧身 冬季 保暖",
       "reputation": 0.76
+    },
+    {
+      "product_id": "prod_051",
+      "name": "小米 15.6英寸商务双肩包",
+      "image_url": "",
+      "category": "箱包/双肩包",
+      "product_type": "双肩包",
+      "brand": "小米",
+      "price": 169,
+      "stock": 1200,
+      "platform_id": "jd",
+      "promotion_id": null,
+      "features": [
+        "防泼水",
+        "电脑隔层",
+        "商务",
+        "通勤",
+        "轻便"
+      ],
+      "embedding_text": "箱包/双肩包 双肩包 小米 15.6英寸商务双肩包 防泼水 电脑隔层 商务 通勤 轻便",
+      "reputation": 0.88
+    },
+    {
+      "product_id": "prod_052",
+      "name": "地平线8号 商务通勤双肩包",
+      "image_url": "",
+      "category": "箱包/双肩包",
+      "product_type": "双肩包",
+      "brand": "地平线8号",
+      "price": 269,
+      "stock": 580,
+      "platform_id": "jd",
+      "promotion_id": null,
+      "features": [
+        "防泼水",
+        "电脑隔层",
+        "通勤",
+        "大容量",
+        "减压肩带"
+      ],
+      "embedding_text": "箱包/双肩包 双肩包 地平线8号 商务通勤双肩包 防泼水 电脑隔层 通勤 大容量 减压肩带",
+      "reputation": 0.91
+    },
+    {
+      "product_id": "prod_053",
+      "name": "90分 双肩包男士商务背包",
+      "image_url": "",
+      "category": "箱包/双肩包",
+      "product_type": "双肩包",
+      "brand": "90分",
+      "price": 229,
+      "stock": 830,
+      "platform_id": "tb",
+      "promotion_id": null,
+      "features": [
+        "防泼水",
+        "电脑隔层",
+        "商务",
+        "通勤",
+        "简约"
+      ],
+      "embedding_text": "箱包/双肩包 双肩包 90分 双肩包男士商务背包 防泼水 电脑隔层 商务 通勤 简约",
+      "reputation": 0.85
+    },
+    {
+      "product_id": "prod_054",
+      "name": "京东京造 商务休闲双肩包",
+      "image_url": "",
+      "category": "箱包/双肩包",
+      "product_type": "双肩包",
+      "brand": "京东京造",
+      "price": 149,
+      "stock": 950,
+      "platform_id": "jd",
+      "promotion_id": null,
+      "features": [
+        "防泼水",
+        "电脑隔层",
+        "休闲",
+        "通勤",
+        "性价比"
+      ],
+      "embedding_text": "箱包/双肩包 双肩包 京东京造 商务休闲双肩包 防泼水 电脑隔层 休闲 通勤 性价比",
+      "reputation": 0.82
+    },
+    {
+      "product_id": "prod_055",
+      "name": "新秀丽 商务双肩包",
+      "image_url": "",
+      "category": "箱包/双肩包",
+      "product_type": "双肩包",
+      "brand": "新秀丽",
+      "price": 599,
+      "stock": 320,
+      "platform_id": "jd",
+      "promotion_id": null,
+      "features": [
+        "防泼水",
+        "电脑隔层",
+        "商务",
+        "通勤",
+        "品牌"
+      ],
+      "embedding_text": "箱包/双肩包 双肩包 新秀丽 商务双肩包 防泼水 电脑隔层 商务 通勤 品牌",
+      "reputation": 0.93
+    },
+    {
+      "product_id": "prod_056",
+      "name": "国家地理 户外通勤双肩包",
+      "image_url": "",
+      "category": "箱包/双肩包",
+      "product_type": "双肩包",
+      "brand": "国家地理",
+      "price": 199,
+      "stock": 670,
+      "platform_id": "tb",
+      "promotion_id": null,
+      "features": [
+        "防泼水",
+        "电脑隔层",
+        "户外",
+        "通勤",
+        "大容量"
+      ],
+      "embedding_text": "箱包/双肩包 双肩包 国家地理 户外通勤双肩包 防泼水 电脑隔层 户外 通勤 大容量",
+      "reputation": 0.86
+    },
+    {
+      "product_id": "prod_057",
+      "name": "HLA 海澜之家 轻商务修身西装外套",
+      "image_url": "",
+      "category": "男装/上装",
+      "product_type": "西装",
+      "brand": "海澜之家",
+      "price": 459,
+      "stock": 320,
+      "platform_id": "jd",
+      "promotion_id": null,
+      "features": [
+        "聚酯纤维",
+        "修身",
+        "商务",
+        "面试",
+        "正装"
+      ],
+      "embedding_text": "男装/上装 西装 海澜之家 轻商务修身西装外套 聚酯纤维 修身 商务 面试 正装",
+      "reputation": 0.84
+    },
+    {
+      "product_id": "prod_058",
+      "name": "GXG 时尚休闲西装外套",
+      "image_url": "",
+      "category": "男装/上装",
+      "product_type": "西装",
+      "brand": "GXG",
+      "price": 529,
+      "stock": 210,
+      "platform_id": "jd",
+      "promotion_id": null,
+      "features": [
+        "聚酯纤维",
+        "休闲",
+        "时尚",
+        "年轻",
+        "面试"
+      ],
+      "embedding_text": "男装/上装 西装 GXG 时尚休闲西装外套 聚酯纤维 休闲 时尚 年轻 面试",
+      "reputation": 0.79
+    },
+    {
+      "product_id": "prod_059",
+      "name": "七匹狼 免烫商务正装衬衫",
+      "image_url": "",
+      "category": "男装/上装",
+      "product_type": "衬衫",
+      "brand": "七匹狼",
+      "price": 239,
+      "stock": 450,
+      "platform_id": "jd",
+      "promotion_id": null,
+      "features": [
+        "棉",
+        "免烫",
+        "商务",
+        "正装",
+        "面试"
+      ],
+      "embedding_text": "男装/上装 衬衫 七匹狼 免烫商务正装衬衫 棉 免烫 商务 正装 面试",
+      "reputation": 0.87
+    },
+    {
+      "product_id": "prod_060",
+      "name": "雅戈尔 免烫纯棉正装衬衫",
+      "image_url": "",
+      "category": "男装/上装",
+      "product_type": "衬衫",
+      "brand": "雅戈尔",
+      "price": 299,
+      "stock": 380,
+      "platform_id": "jd",
+      "promotion_id": null,
+      "features": [
+        "纯棉",
+        "免烫",
+        "正装",
+        "面试",
+        "商务"
+      ],
+      "embedding_text": "男装/上装 衬衫 雅戈尔 免烫纯棉正装衬衫 纯棉 免烫 正装 面试 商务",
+      "reputation": 0.9
+    },
+    {
+      "product_id": "prod_061",
+      "name": "HLA 海澜之家 修身弹力西裤",
+      "image_url": "",
+      "category": "男装/下装",
+      "product_type": "西裤",
+      "brand": "海澜之家",
+      "price": 229,
+      "stock": 560,
+      "platform_id": "jd",
+      "promotion_id": null,
+      "features": [
+        "聚酯纤维",
+        "修身",
+        "弹力",
+        "商务",
+        "面试"
+      ],
+      "embedding_text": "男装/下装 西裤 海澜之家 修身弹力西裤 聚酯纤维 修身 弹力 商务 面试",
+      "reputation": 0.83
+    },
+    {
+      "product_id": "prod_062",
+      "name": "九牧王 免烫商务休闲西裤",
+      "image_url": "",
+      "category": "男装/下装",
+      "product_type": "西裤",
+      "brand": "九牧王",
+      "price": 279,
+      "stock": 420,
+      "platform_id": "tb",
+      "promotion_id": null,
+      "features": [
+        "聚酯纤维",
+        "免烫",
+        "商务",
+        "休闲",
+        "面试"
+      ],
+      "embedding_text": "男装/下装 西裤 九牧王 免烫商务休闲西裤 聚酯纤维 免烫 商务 休闲 面试",
+      "reputation": 0.86
+    },
+    {
+      "product_id": "prod_063",
+      "name": "耐克 Air Zoom 跑步运动鞋",
+      "image_url": "",
+      "category": "鞋靴/运动鞋",
+      "product_type": "运动鞋",
+      "brand": "耐克",
+      "price": 599,
+      "stock": 890,
+      "platform_id": "jd",
+      "promotion_id": null,
+      "features": [
+        "网面",
+        "透气",
+        "缓震",
+        "跑步",
+        "轻便"
+      ],
+      "embedding_text": "鞋靴/运动鞋 运动鞋 耐克 Air Zoom 跑步运动鞋 网面 透气 缓震 跑步 轻便",
+      "reputation": 0.92
+    },
+    {
+      "product_id": "prod_064",
+      "name": "阿迪达斯 Ultraboost 轻便跑步鞋",
+      "image_url": "",
+      "category": "鞋靴/运动鞋",
+      "product_type": "运动鞋",
+      "brand": "阿迪达斯",
+      "price": 699,
+      "stock": 650,
+      "platform_id": "jd",
+      "promotion_id": null,
+      "features": [
+        "网面",
+        "透气",
+        "BOOST",
+        "缓震",
+        "轻便"
+      ],
+      "embedding_text": "鞋靴/运动鞋 运动鞋 阿迪达斯 Ultraboost 轻便跑步鞋 网面 透气 BOOST 缓震 轻便",
+      "reputation": 0.94
+    },
+    {
+      "product_id": "prod_065",
+      "name": "安踏 C37 软跑鞋",
+      "image_url": "",
+      "category": "鞋靴/运动鞋",
+      "product_type": "运动鞋",
+      "brand": "安踏",
+      "price": 259,
+      "stock": 1500,
+      "platform_id": "tb",
+      "promotion_id": null,
+      "features": [
+        "网面",
+        "透气",
+        "软底",
+        "跑步",
+        "性价比"
+      ],
+      "embedding_text": "鞋靴/运动鞋 运动鞋 安踏 C37 软跑鞋 网面 透气 软底 跑步 性价比",
+      "reputation": 0.88
+    },
+    {
+      "product_id": "prod_066",
+      "name": "鸿星尔克 男士休闲运动鞋",
+      "image_url": "",
+      "category": "鞋靴/运动鞋",
+      "product_type": "运动鞋",
+      "brand": "鸿星尔克",
+      "price": 189,
+      "stock": 2000,
+      "platform_id": "pdd",
+      "promotion_id": null,
+      "features": [
+        "网面",
+        "透气",
+        "休闲",
+        "百搭",
+        "性价比"
+      ],
+      "embedding_text": "鞋靴/运动鞋 运动鞋 鸿星尔克 男士休闲运动鞋 网面 透气 休闲 百搭 性价比",
+      "reputation": 0.82
+    },
+    {
+      "product_id": "prod_067",
+      "name": "奥康 男士商务正装皮鞋",
+      "image_url": "",
+      "category": "鞋靴/皮鞋",
+      "product_type": "皮鞋",
+      "brand": "奥康",
+      "price": 329,
+      "stock": 480,
+      "platform_id": "jd",
+      "promotion_id": null,
+      "features": [
+        "真皮",
+        "商务",
+        "正装",
+        "面试",
+        "透气"
+      ],
+      "embedding_text": "鞋靴/皮鞋 皮鞋 奥康 男士商务正装皮鞋 真皮 商务 正装 面试 透气",
+      "reputation": 0.85
+    },
+    {
+      "product_id": "prod_068",
+      "name": "红蜻蜓 男士休闲皮鞋",
+      "image_url": "",
+      "category": "鞋靴/皮鞋",
+      "product_type": "皮鞋",
+      "brand": "红蜻蜓",
+      "price": 259,
+      "stock": 620,
+      "platform_id": "tb",
+      "promotion_id": null,
+      "features": [
+        "真皮",
+        "休闲",
+        "商务",
+        "百搭",
+        "舒适"
+      ],
+      "embedding_text": "鞋靴/皮鞋 皮鞋 红蜻蜓 男士休闲皮鞋 真皮 休闲 商务 百搭 舒适",
+      "reputation": 0.81
     }
   ]
 }
