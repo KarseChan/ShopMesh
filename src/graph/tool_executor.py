@@ -8,6 +8,7 @@ logger = get_logger("tool_executor")
 # Fields to extract from args per tool for logging (no PII)
 _TOOL_ARGS_LOG_FIELDS = {
     "product_search": ["semantic_query"],
+    "multi_query_search": ["search_requests"],
     "product_detail_batch": ["product_ids"],
     "price_compare": ["product_ids"],
     "review_summary": ["product_ids", "aspects"],
@@ -23,6 +24,11 @@ _TOOL_RESULT_LOG_FIELDS = {
         "supplemental": r.get("supplemental", 0),
         "exact_product_ids": r.get("exact_product_ids", [])[:5],
         "supplemental_product_ids": r.get("supplemental_product_ids", [])[:5],
+    },
+    "multi_query_search": lambda r: {
+        "total": r.get("total", 0),
+        "queries_executed": r.get("queries_executed", 0),
+        "types": list(r.get("by_type", {}).keys()),
     },
     "product_detail_batch": lambda r: {
         "count": len(r) if isinstance(r, list) else 0,
@@ -41,7 +47,10 @@ _TOOL_RESULT_LOG_FIELDS = {
     },
     "ask_clarification": lambda r: {
         "should_ask": r.get("should_ask", False),
-        "question_count": len(r.get("questions", [])),
+        "strategy": r.get("strategy", ""),
+        "fields": r.get("fields", []),
+        "question_count": r.get("question_count", 0),
+        "question_type": r.get("question_type", ""),
     },
 }
 
@@ -59,7 +68,7 @@ def _extract_args_for_log(tool_name: str, args: dict) -> dict:
         ents = args["entities"]
         log_args["entities"] = {
             k: v for k, v in ents.items()
-            if k in ("category", "product_type", "brand", "scenario",
+            if k in ("category", "product_type", "gender", "brand", "scenario",
                      "preference", "price_min", "price_max",
                      "soft_requirements", "hard_constraints")
         }

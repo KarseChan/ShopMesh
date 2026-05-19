@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { useChatStream, ChatMessage, Product, ClarificationQuestion, ToolCall } from "@/hooks/useChatStream";
+import { useChatStream, ChatMessage, Product, Recommendation, ClarificationQuestion, ToolCall } from "@/hooks/useChatStream";
 import ProductCard from "./ProductCard";
 import OrderConfirm from "./OrderConfirm";
 
@@ -116,17 +116,44 @@ function MessageBubble({ message, onOrder, onOptionClick }: { message: ChatMessa
             {message.toolCalls && message.toolCalls.length > 0 && (
               <ToolCallBubble toolCalls={message.toolCalls} />
             )}
-            {message.content && (
-              <div className="bg-gray-100 px-4 py-3 rounded-2xl rounded-bl-sm whitespace-pre-wrap text-sm leading-relaxed">
-                {message.content}
-              </div>
-            )}
-            {message.products && message.products.length > 0 && (
-              <div className="grid gap-2">
-                {message.products.map((product, i) => (
-                  <ProductCard key={i} product={product} rank={i + 1} onOrder={onOrder} />
-                ))}
-              </div>
+            {message.recommendations && message.recommendations.length > 0 && message.products ? (
+              <>
+                {/* Interleaved: recommendation text + product card pairs */}
+                {message.recommendations.map((rec, i) => {
+                  const product = message.products!.find((p) => p.product_id === rec.product_id);
+                  if (!product) return null;
+                  return (
+                    <div key={rec.product_id || i} className="space-y-2">
+                      <div className="bg-gray-100 px-4 py-3 rounded-2xl rounded-bl-sm text-sm leading-relaxed">
+                        {rec.text}
+                      </div>
+                      <ProductCard product={product} rank={i + 1} onOrder={onOrder} />
+                    </div>
+                  );
+                })}
+                {/* Summary text after all recommendations */}
+                {message.content && (
+                  <div className="bg-gray-100 px-4 py-3 rounded-2xl rounded-bl-sm text-sm leading-relaxed text-gray-600">
+                    {message.content}
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                {/* Fallback: content first, then product grid */}
+                {message.content && (
+                  <div className="bg-gray-100 px-4 py-3 rounded-2xl rounded-bl-sm whitespace-pre-wrap text-sm leading-relaxed">
+                    {message.content}
+                  </div>
+                )}
+                {message.products && message.products.length > 0 && (
+                  <div className="grid gap-2">
+                    {message.products.map((product, i) => (
+                      <ProductCard key={i} product={product} rank={i + 1} onOrder={onOrder} />
+                    ))}
+                  </div>
+                )}
+              </>
             )}
             {message.questions && message.questions.length > 0 && onOptionClick ? (
               <ClarificationForm questions={message.questions} onSubmit={onOptionClick} />

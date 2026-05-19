@@ -25,9 +25,10 @@ class AgentState(TypedDict):
     user_id: str                               # User ID
 
     # === Deterministic preprocessing output ===
-    intent: str                                # Intent classification result
+    intent: dict                               # Intent classification result {user_goal, task_type, execution_hint}
     entities: dict                              # Extracted entities
     memory_chunks: list                         # Recalled memory chunks
+    search_plan: dict                           # Search plan from search_planner
 
     # === ReAct Agent dynamic decision ===
     search_results: list                        # Retrieval results
@@ -36,5 +37,9 @@ class AgentState(TypedDict):
     iteration: int                              # ReAct loop iteration count
     max_iterations: int                         # Max iterations (default 5)
     final_response: str | None                  # Final response (termination signal)
+    recommendations: list                       # Structured per-product recommendations [{product_id, text}]
     asked_fields: list                          # Fields already asked about
     used_fallback: bool                         # Whether fallback path was used
+
+    # === Clarification state ===
+    pending_clarification: dict | None          # Awaiting clarification answer {fields, question_spec, question_type, strategy, entities_snapshot}

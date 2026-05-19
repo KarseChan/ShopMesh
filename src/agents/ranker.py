@@ -201,10 +201,33 @@ def _find_in_product(terms: list[str], product_lower: str) -> str | None:
     return None
 
 
+def _terms_match_score(terms: list[str], product_text: str) -> tuple[float, list[str]]:
+    """Score how well a list of terms matches product text.
+
+    Used with normalized soft_requirements that have pre-expanded terms.
+    Returns (score, matched_terms) where score is hit_ratio and matched_terms lists what was hit.
+    """
+    if not terms or not product_text:
+        return 0.0, []
+
+    product_lower = product_text.lower()
+    hits = 0
+    matched_terms = []
+
+    for term in terms:
+        if term.lower() in product_lower:
+            hits += 1
+            matched_terms.append(term)
+
+    return hits / len(terms), matched_terms
+
+
 def _score_attribute_match(
     product: dict, soft_requirements: list[dict]
 ) -> tuple[float, dict[str, dict]]:
     """Score product against all soft_requirements using keyword+synonym matching.
+
+    Supports both normalized format (with terms list) and legacy format (text only).
 
     Returns (weighted_score, attribute_scores) where attribute_scores maps
     req_text → {"score": float, "matched_terms": list[str]}.
@@ -218,12 +241,20 @@ def _score_attribute_match(
     attribute_scores = {}
 
     for req in soft_requirements:
-        req_text = req.get("text", "")
         importance = req.get("importance", 0.7)
-        score, matched = _keyword_match_score(req_text, product_text)
+
+        # Normalized format: use pre-expanded terms
+        if "terms" in req and req["terms"]:
+            display_key = req.get("canonical") or req.get("raw_text", "")
+            score, matched = _terms_match_score(req["terms"], product_text)
+        else:
+            # Legacy format: use text with keyword matching
+            display_key = req.get("text", "")
+            score, matched = _keyword_match_score(display_key, product_text)
+
         total_score += score * importance
         total_weight += importance
-        attribute_scores[req_text] = {
+        attribute_scores[display_key] = {
             "score": round(score, 3),
             "matched_terms": matched,
         }

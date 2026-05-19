@@ -22,6 +22,7 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   products?: Product[];
+  recommendations?: Recommendation[];
   options?: string[];
   questions?: ClarificationQuestion[];
   toolCalls?: ToolCall[];
@@ -29,12 +30,26 @@ export interface ChatMessage {
 }
 
 export interface Product {
+  product_id?: string;
   name: string;
   price: number;
   final_price?: number;
+  platform_id?: string;
+  category?: string;
+  product_type?: string;
+  brand?: string;
+  image_url?: string;
   rank_score?: number;
+  rank_reasons?: Record<string, number>;
   promo_desc?: string;
   suggest_message?: string;
+  is_abnormal?: boolean;
+  reputation?: number;
+}
+
+export interface Recommendation {
+  product_id: string;
+  text: string;
 }
 
 export interface UseChatStreamReturn {
@@ -87,6 +102,7 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
       let buffer = "";
       let currentContent = "";
       let currentProducts: Product[] = [];
+      let currentRecommendations: Recommendation[] = [];
       let currentOptions: string[] = [];
       let currentQuestions: ClarificationQuestion[] = [];
       let currentToolCalls: ToolCall[] = [];
@@ -113,6 +129,8 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
                 currentContent = content;
               }, (products) => {
                 currentProducts = products;
+              }, (recs) => {
+                currentRecommendations = recs;
               }, (orderData) => {
                 setPendingOrder(orderData);
               }, (opts) => {
@@ -137,6 +155,7 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
               ...last,
               content: currentContent || last.content,
               products: currentProducts.length > 0 ? currentProducts : last.products,
+              recommendations: currentRecommendations.length > 0 ? currentRecommendations : last.recommendations,
               options: currentOptions.length > 0 ? currentOptions : last.options,
               questions: currentQuestions.length > 0 ? currentQuestions : last.questions,
               toolCalls: currentToolCalls.length > 0 ? currentToolCalls : last.toolCalls,
@@ -281,6 +300,7 @@ function handleSSEEvent(
   data: Record<string, unknown>,
   setContent: (content: string) => void,
   setProducts: (products: Product[]) => void,
+  setRecommendations: (recs: Recommendation[]) => void,
   setPendingOrder: (order: Record<string, unknown> | null) => void,
   setOptions: (options: string[]) => void,
   setQuestions: (questions: ClarificationQuestion[]) => void,
@@ -301,6 +321,9 @@ function handleSSEEvent(
       break;
     case "results":
       setProducts((data.products as Product[]) || []);
+      if (data.recommendations) {
+        setRecommendations(data.recommendations as Recommendation[]);
+      }
       break;
     case "explanation":
       setContent(data.text as string || "");

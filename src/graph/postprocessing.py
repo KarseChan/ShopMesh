@@ -109,7 +109,9 @@ async def node_postprocess(state: dict) -> dict:
     user_input = _get_user_input(state)
     response = _get_final_response(state)
     entities = state.get("entities", {})
-    intent = state.get("intent", "")
+    intent_raw = state.get("intent", {})
+    # write_chunk expects a string intent
+    intent = intent_raw.get("user_goal", "") if isinstance(intent_raw, dict) else str(intent_raw)
     user_id = state.get("user_id", "default_user")
 
     if not user_input or not response:

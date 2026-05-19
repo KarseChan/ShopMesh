@@ -39,6 +39,8 @@ Thumbs.db
 frontend/.next/
 frontend/node_modules/
 frontend/package-lock.json
+frontend/next-env.d.ts
+frontend/tsconfig.tsbuildinfo
 
 # Claude Code
 .claude/

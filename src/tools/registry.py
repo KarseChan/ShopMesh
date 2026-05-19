@@ -8,6 +8,7 @@ from src.tools.schema import ToolDef, ToolRegistry, tool_registry
 
 # Import all tool modules — each module registers itself on import
 import src.tools.product_search      # noqa: F401
+import src.tools.multi_query_search  # noqa: F401
 import src.tools.product_detail      # noqa: F401
 import src.tools.review_tool         # noqa: F401
 import src.tools.agent_tools         # noqa: F401

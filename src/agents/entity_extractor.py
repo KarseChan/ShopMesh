@@ -52,7 +52,10 @@ SYSTEM_PROMPT = (
     "hard_constraints：硬过滤条件，从已提取字段中选取必须满足的条件。"
     "通常包含 product_type（如有）和 gender（如有），也可能包含 brand、price_max 等。\n"
     "soft_requirements：软需求列表，用户提到的非硬性偏好。每个元素：\n"
-    '  {"text": "原始描述", "type": "类型", "importance": 0.5-1.0}\n'
+    '  {"raw_text": "用户原话", "canonical": "核心需求词", "type": "类型", "importance": 0.5-1.0}\n'
+    "  raw_text：用户原话摘录，如'适合通勤'、'夏天穿的'、'想要轻薄的'\n"
+    "  canonical：去掉修饰词后的核心需求词，如'通勤'、'夏天'、'轻薄'\n"
+    "  去掉的修饰词：适合、适用于、用于、想要、推荐、几款、一些、比较、非常、特别、需要、找、看看、有没有\n"
     "  type 示例：season_scene（季节/场景）、functional_preference（功能偏好）、"
     "style_preference（风格偏好）、quality_signal（品质信号）、gift_context（送礼场景）\n"
     "  importance：用户语气强弱，'必须/一定要'→1.0，'最好/希望'→0.7，'如果能/顺便'→0.5\n"

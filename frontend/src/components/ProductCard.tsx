@@ -1,15 +1,6 @@
 "use client";
 
-interface Product {
-  name: string;
-  price: number;
-  final_price?: number;
-  rank_score?: number;
-  promo_desc?: string;
-  suggest_message?: string;
-  platform_id?: string;
-  is_abnormal?: boolean;
-}
+import { Product } from "@/hooks/useChatStream";
 
 interface ProductCardProps {
   product: Product;

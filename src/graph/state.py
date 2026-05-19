@@ -33,9 +33,10 @@ class ShoppingState(TypedDict):
     errors: Annotated[list, _add_lists]      # Error records, parallel append
 
     # === Exclusive fields (each agent writes its own) ===
-    intent: str                              # Semantic Router / LLM Router
+    intent: dict                             # Intent Classifier {user_goal, task_type, execution_hint}
     entities: dict                           # Entity Extractor
     memory_chunks: list                      # Memory Retriever (L2c)
+    search_plan: dict                        # Search Planner (检索策略)
     search_results: list                     # Hybrid Retriever
     promotion_info: dict                     # Promotion Calculator
     ranked_results: list                     # Ranker
@@ -46,6 +47,7 @@ class ShoppingState(TypedDict):
     asked_fields: list                       # Fields already asked about (clarification dedup)
     clarification_options: list              # Clickable options for current clarification question
     clarification_questions: list            # Batch of clarification questions
+    pending_clarification: dict | None       # Awaiting clarification answer {fields, question_spec, question_type, strategy, entities_snapshot}
 
     # === HITL order fields ===
     order_info: dict | None                  # Prepared order details (for interrupt)

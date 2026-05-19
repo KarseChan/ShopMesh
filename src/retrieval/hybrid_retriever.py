@@ -64,10 +64,12 @@ async def hybrid_search(
     qdrant_filter = build_filter(entities)
     simple_filters = _filter_to_dict(entities)
 
-    # Log the filter being applied (with product_type + gender details)
+    # Log the filter being applied (with product_type + gender + price details)
     product_type = entities.get("product_type")
     category = entities.get("category")
     gender = entities.get("gender")
+    price_min = entities.get("price_min")
+    price_max = entities.get("price_max")
     normalized_categories = _expand_category(category, product_type, gender) if (category or product_type) else []
     logger.info("filter_built",
                 simple_filters=simple_filters,
@@ -75,7 +77,10 @@ async def hybrid_search(
                 product_type=product_type,
                 gender=gender,
                 normalized_categories=normalized_categories,
-                product_type_filter_applied=product_type is not None)
+                product_type_filter_applied=product_type is not None,
+                price_min=price_min,
+                price_max=price_max,
+                price_filter_applied=price_min is not None or price_max is not None)
 
     # Always run unfiltered search for comparison
     unfiltered_results = await store.search(
