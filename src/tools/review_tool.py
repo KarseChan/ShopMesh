@@ -43,7 +43,10 @@ async def review_summary(
     """
     products = load_products()
     id_set = set(product_ids)
-    matched = [p for p in products if p.get("product_id") in id_set]
+    by_id = {p["product_id"]: p for p in products if p.get("product_id") in id_set}
+
+    # Preserve input order
+    matched = [by_id[pid] for pid in product_ids if pid in by_id]
 
     results = []
     for p in matched:

@@ -416,3 +416,29 @@ filter_built
 ```
 
 **状态**: 已修复
+
+---
+
+## P13: product_detail_batch / review_summary 返回顺序与输入不一致（已修复）
+
+**发现时间**: 2026-05-19
+
+**现象**: Agent 调用 `product_detail_batch(["prod_005", "prod_004", "prod_006"])` 和 `review_summary(["prod_004", "prod_005", "prod_006"])`，两个工具返回的结果顺序都取决于数据文件中的存储顺序（prod_004, prod_005, prod_006），而非输入参数顺序。
+
+**风险**: 如果后续生成文案时按列表下标合并 `details[i] + reviews[i]`，当两次调用传入的 product_ids 顺序不同时，会出现商品详情和评论摘要错配。
+
+**根因**: `product_detail_batch`、`price_compare`、`review_summary` 三个工具都用 `[p for p in products if p["product_id"] in id_set]` 过滤，遍历顺序取决于 `load_products()` 返回顺序（数据文件顺序），不保留输入顺序。
+
+**解决方案**: 三个工具统一改为先构建 `by_id` 字典，再按输入 `product_ids` 顺序提取：
+
+```python
+by_id = {p["product_id"]: p for p in products if p.get("product_id") in id_set}
+matched = [by_id[pid] for pid in product_ids if pid in by_id]
+```
+
+### 修改文件
+
+- `src/tools/product_detail.py` — `product_detail_batch()` 和 `price_compare()`
+- `src/tools/review_tool.py` — `review_summary()`
+
+**状态**: 已修复

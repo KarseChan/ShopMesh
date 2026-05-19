@@ -22,7 +22,10 @@ async def product_detail_batch(product_ids: list[str]) -> list[dict]:
     """
     products = load_products()
     id_set = set(product_ids)
-    matched = [p for p in products if p.get("product_id") in id_set]
+    by_id = {p["product_id"]: p for p in products if p.get("product_id") in id_set}
+
+    # Preserve input order
+    matched = [by_id[pid] for pid in product_ids if pid in by_id]
 
     logger.info("detail_batch_fetched", requested=len(product_ids), matched=len(matched))
     return matched
@@ -43,7 +46,10 @@ async def price_compare(product_ids: list[str]) -> dict:
     """
     products = load_products()
     id_set = set(product_ids)
-    matched = [p for p in products if p.get("product_id") in id_set]
+    by_id = {p["product_id"]: p for p in products if p.get("product_id") in id_set}
+
+    # Preserve input order
+    matched = [by_id[pid] for pid in product_ids if pid in by_id]
 
     if not matched:
         return {"products": [], "price_range": {"min": 0, "max": 0}, "best_value": None}
