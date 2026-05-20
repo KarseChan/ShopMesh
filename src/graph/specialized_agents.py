@@ -97,19 +97,27 @@ def _register_prompt_builders():
 # ──────────────────────────────────────────────
 
 def _build_messages(state: dict, system_prompt: str) -> list[dict]:
-    """Build message list: system prompt + dialog history + prior observations."""
+    """Build message list: system prompt + current user input + tool observations.
+
+    Only includes the last user message (not full history) to avoid stale
+    product data from previous turns confusing the LLM.
+    """
     messages = [{"role": "system", "content": system_prompt}]
 
-    for msg in state.get("messages", []):
+    # Only include the last user message, skip previous turns' assistant responses
+    # to avoid stale recommendation data polluting the current turn's context
+    all_msgs = state.get("messages", [])
+    for msg in reversed(all_msgs):
         if isinstance(msg, dict):
-            messages.append({"role": msg.get("role", "user"), "content": msg.get("content", "")})
+            role = msg.get("role", "user")
         else:
             role = getattr(msg, "type", "user")
             if role == "human":
                 role = "user"
-            elif role == "ai":
-                role = "assistant"
-            messages.append({"role": role, "content": getattr(msg, "content", "")})
+        if role == "user":
+            content = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
+            messages.append({"role": "user", "content": content})
+            break
 
     for entry in state.get("tool_calls_log", []):
         tool_name = entry.get("tool", "")
@@ -168,6 +176,10 @@ async def _run_agent_loop(state: dict, agent_name: str) -> dict:
     # Call LLM
     llm = get_llm("react_agent")
     response = await llm.chat(messages, tools=tool_schemas)
+    logger.info("llm_response", agent=agent_name,
+                 has_tool_calls=bool(response.get("tool_calls")),
+                 content_len=len(response.get("content", "")),
+                 content_preview=response.get("content", "")[:300])
 
     tool_calls = response.get("tool_calls")
     if tool_calls:
@@ -210,6 +222,7 @@ async def _run_agent_loop(state: dict, agent_name: str) -> dict:
     content = response.get("content", "")
     logger.info("agent_final", agent=agent_name,
                  iteration=state.get("iteration", 0), response_len=len(content))
+    logger.info("llm_raw_output", agent=agent_name, content=content[:2000])
 
     # Parse + validate with schema
     parsed = _parse_final_answer(content, cfg.response_type)

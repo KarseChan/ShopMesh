@@ -334,7 +334,7 @@ function handleSSEEvent(
       setPendingOrder(data);
       break;
     case "error":
-      setContent(`错误：${data.error || "未知错误"}`);
+      setContent(data.error || "抱歉，处理过程中出现了问题，请稍后再试。");
       break;
   }
 }

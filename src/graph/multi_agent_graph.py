@@ -14,6 +14,7 @@ import traceback
 import uuid
 from typing import AsyncGenerator
 
+import httpx
 from langgraph.graph import END, StateGraph
 
 from src.graph.agent_state import AgentState
@@ -34,6 +35,15 @@ from src.graph.specialized_agents import (
 from src.observability.logger import get_logger, generate_request_id, set_request_context
 
 logger = get_logger("multi_agent")
+
+
+def _friendly_error(e: Exception) -> str:
+    """Convert technical error to user-friendly message."""
+    if isinstance(e, (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout)):
+        return "抱歉，系统暂时无法连接到AI服务，请稍后再试。"
+    if isinstance(e, httpx.HTTPStatusError) and e.response.status_code >= 500:
+        return "抱歉，AI服务暂时不可用，请稍后再试。"
+    return "抱歉，处理过程中出现了问题，请稍后再试。"
 
 
 def build_multi_agent_graph():
@@ -130,7 +140,7 @@ async def run_multi_agent_stream(
         "messages": initial_messages,
         "user_id": user_id,
         "intent": {},
-        "entities": {},
+        # entities: 不覆盖，让 checkpointer 保留前一轮值，实现 follow-up 上下文继承
         "memory_chunks": [],
         "search_plan": {},
         "search_results": [],
@@ -199,6 +209,13 @@ async def run_multi_agent_stream(
             rec_ids = {r.get("product_id", "") for r in recommendations if r.get("product_id")}
             # Ensure all recommended products are in the products list
             result_ids = {p.get("product_id", "") for p in search_results}
+            logger.info("sse_results_emit",
+                         product_count=len(search_results),
+                         product_ids=[p.get("product_id") for p in search_results],
+                         rec_count=len(recommendations),
+                         rec_ids=list(rec_ids),
+                         response_type=response_type,
+                         final_response_preview=final_response[:200] if final_response else "")
             yield {"event": "results", "data": {
                 "products": search_results,
                 "recommendations": recommendations,
@@ -215,5 +232,6 @@ async def run_multi_agent_stream(
     except Exception as e:
         tb = traceback.format_exc()
         logger.error("multi_agent_stream_error", error_type=type(e).__name__, error_message=str(e), traceback=tb)
-        yield {"event": "error", "data": {"error": str(e)}}
+        user_msg = _friendly_error(e)
+        yield {"event": "error", "data": {"error": user_msg, "severity": "low"}}
         yield {"event": "done", "data": {"request_id": request_id}}

@@ -1258,3 +1258,71 @@ _SYSTEM_TEMPLATE = """...
 2. `llm_client.py` — `chat_json` 增加 regex fallback（提取 `{...}` 块），与 `react_node.py` 对齐
 
 **状态**: 已修复
+
+---
+
+## P27: LLM API 连接失败无重试 + 前端显示原始报错
+
+**发现时间**: 2026-05-20
+
+**现象**: 用户提问"我想买个送朋友的礼物，预算 200 左右"后补充"送女生"，后端报错 `httpx.ConnectError: All connection attempts failed`（DeepSeek API 临时不可达），前端显示"错误：All connection attempts failed"，用户体验差。
+
+**根因**: 两个问题叠加。
+
+1. **LLM 客户端无重试机制** — `llm_client.py` 的 `chat()` 方法直接发起 HTTP 请求，连接失败时立即抛出异常，没有重试。网络波动或 API 短暂不可达时直接失败。
+2. **错误信息未转换为用户友好文案** — `multi_agent_graph.py` 和 `shopping_agent.py` 的异常处理直接将 `str(e)` 传给前端，显示原始技术错误信息。
+
+**解决方案**: 两层修复。
+
+### 1. llm_client.py — 指数退避重试
+
+`LLMClient.chat()` 新增重试机制：
+
+- 最多重试 3 次（`_MAX_RETRIES = 3`）
+- 指数退避：1s → 2s → 4s（`_BASE_DELAY = 1.0`）
+- 可重试错误类型：`ConnectError`、`ReadTimeout`、`ConnectTimeout`、HTTP 5xx
+- 不可重试：HTTP 4xx（客户端错误，重试无意义）
+- 每次重试记录 `llm_retry` 日志（attempt、error_type、delay）
+
+```python
+for attempt in range(_MAX_RETRIES):
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+        return data["choices"][0]["message"]
+    except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout) as e:
+        last_error = e
+        delay = _BASE_DELAY * (2 ** attempt)
+        logger.warning("llm_retry", attempt=attempt + 1, ...)
+        if attempt < _MAX_RETRIES - 1:
+            await asyncio.sleep(delay)
+```
+
+### 2. multi_agent_graph.py / shopping_agent.py — 用户友好错误提示
+
+新增 `_friendly_error()` 函数，将技术错误转换为友好文案：
+
+| 错误类型 | 前端显示 |
+|---------|---------|
+| ConnectError / ReadTimeout / ConnectTimeout | "抱歉，系统暂时无法连接到AI服务，请稍后再试。" |
+| HTTP 5xx | "抱歉，AI服务暂时不可用，请稍后再试。" |
+| 其他异常 | "抱歉，处理过程中出现了问题，请稍后再试。" |
+
+异常处理中 `yield {"event": "error", "data": {"error": user_msg, "severity": "low"}}` 替代原来的 `str(e)`。
+
+### 3. useChatStream.ts — 前端适配
+
+前端 `handleSSEEvent` 的 error 分支移除 `错误：` 前缀，直接显示后端返回的友好文案。
+
+**修改文件**:
+
+| 文件 | 改动 |
+|------|------|
+| `src/models/llm_client.py` | chat() 新增指数退避重试（3 次） |
+| `src/graph/multi_agent_graph.py` | 异常处理使用 _friendly_error() |
+| `src/graph/shopping_agent.py` | 异常处理使用 _friendly_error() |
+| `frontend/src/hooks/useChatStream.ts` | error 事件移除"错误："前缀 |
+
+**状态**: 已修复

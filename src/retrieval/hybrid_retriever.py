@@ -134,8 +134,8 @@ def _filter_to_dict(entities: dict) -> dict | None:
         filters["category"] = entities["category"]
     if entities.get("product_type"):
         filters["product_type"] = entities["product_type"]
-    if entities.get("gender"):
-        filters["gender"] = entities["gender"]
+    # gender is NOT a payload field — it's encoded in category prefix ("男装/" / "女装/")
+    # and embedded in the semantic query text. Do not add as hard filter.
     if entities.get("brand"):
         filters["brand"] = entities["brand"]
     return filters if filters else None

@@ -51,6 +51,23 @@ async def _run_normal_preprocessing(user_input: str, user_id: str, state: dict) 
 
     intent, confidence, source = intent_result
 
+    # Context carry-forward: inherit missing fields from previous turn's entities
+    prev_entities = state.get("entities", {})
+    if prev_entities:
+        for field in ("category", "product_type", "brand", "scenario", "price_min", "price_max"):
+            if not entities.get(field) and prev_entities.get(field):
+                entities[field] = prev_entities[field]
+                logger.info("context_inherited", field=field, value=str(prev_entities[field])[:50])
+        # Merge hard_constraints from previous turn (e.g. price range) into current
+        prev_hc = prev_entities.get("hard_constraints", {})
+        cur_hc = entities.get("hard_constraints", {})
+        if prev_hc:
+            merged = {**prev_hc, **cur_hc}  # current overrides previous
+            entities["hard_constraints"] = merged
+            if merged != cur_hc:
+                logger.info("context_inherited_hard_constraints",
+                             merged_keys=list(merged.keys()))
+
     if entities.get("soft_requirements"):
         entities["soft_requirements"] = normalize_soft_requirements(entities["soft_requirements"])
 

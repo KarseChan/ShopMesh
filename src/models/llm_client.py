@@ -1,5 +1,6 @@
 """LLM client factory — supports multiple providers with per-agent config."""
 
+import asyncio
 import json
 import re
 from functools import lru_cache
@@ -7,6 +8,13 @@ from functools import lru_cache
 import httpx
 
 from src.config import config
+from src.observability.logger import get_logger
+
+logger = get_logger("llm_client")
+
+# Retry config
+_MAX_RETRIES = 3
+_BASE_DELAY = 1.0  # seconds
 
 
 class LLMClient:
@@ -21,7 +29,10 @@ class LLMClient:
         self.max_tokens = max_tokens
 
     async def chat(self, messages: list[dict], tools: list[dict] | None = None) -> dict:
-        """Send chat completion request and return the response message."""
+        """Send chat completion request and return the response message.
+
+        Retries up to _MAX_RETRIES times with exponential backoff on connection errors.
+        """
         url = f"{self.base_url}/chat/completions"
         headers = {
             "Content-Type": "application/json",
@@ -37,12 +48,34 @@ class LLMClient:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
 
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
+        last_error = None
+        for attempt in range(_MAX_RETRIES):
+            try:
+                async with httpx.AsyncClient(timeout=60) as client:
+                    resp = await client.post(url, json=payload, headers=headers)
+                    resp.raise_for_status()
+                    data = resp.json()
+                return data["choices"][0]["message"]
+            except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout) as e:
+                last_error = e
+                delay = _BASE_DELAY * (2 ** attempt)
+                logger.warning("llm_retry", attempt=attempt + 1, max_retries=_MAX_RETRIES,
+                               error_type=type(e).__name__, delay=delay)
+                if attempt < _MAX_RETRIES - 1:
+                    await asyncio.sleep(delay)
+            except httpx.HTTPStatusError as e:
+                # 4xx/5xx from LLM API — retry on 5xx, raise on 4xx
+                if e.response.status_code >= 500:
+                    last_error = e
+                    delay = _BASE_DELAY * (2 ** attempt)
+                    logger.warning("llm_retry", attempt=attempt + 1, max_retries=_MAX_RETRIES,
+                                   status=e.response.status_code, delay=delay)
+                    if attempt < _MAX_RETRIES - 1:
+                        await asyncio.sleep(delay)
+                else:
+                    raise
 
-        return data["choices"][0]["message"]
+        raise last_error
 
     async def chat_json(self, messages: list[dict]) -> dict:
         """Chat and parse JSON from the response content."""

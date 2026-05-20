@@ -50,7 +50,8 @@ SYSTEM_PROMPT = (
     "preference：用户对商品品质的偏好描述，如'口碑好'、'销量高'、'大牌'、'便宜'、'轻薄'等。提取原词，不要改写。\n"
     "skin_type/concerns：仅当品类是护肤时才提取，其他品类设为null。\n"
     "hard_constraints：硬过滤条件，从已提取字段中选取必须满足的条件。"
-    "通常包含 product_type（如有）和 gender（如有），也可能包含 brand、price_max 等。\n"
+    "通常包含 product_type（如有），也可能包含 brand、price_max 等。"
+    "gender 不要放入 hard_constraints，它通过语义检索体现。\n"
     "soft_requirements：软需求列表，用户提到的非硬性偏好。每个元素：\n"
     '  {"raw_text": "用户原话", "canonical": "核心需求词", "type": "类型", "importance": 0.5-1.0}\n'
     "  raw_text：用户原话摘录，如'适合通勤'、'夏天穿的'、'想要轻薄的'\n"
