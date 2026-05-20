@@ -52,11 +52,11 @@ agents:
     response_type: product_grid
     tools: [product_search, constraint_relaxation, ask_clarification]
   detail_agent:
-    max_iterations: 3
+    max_iterations: 5
     response_type: detail_card
     tools: [product_search, product_detail_batch, review_summary]
   compare_agent:
-    max_iterations: 3
+    max_iterations: 6
     response_type: comparison_table
     tools: [product_search, product_detail_batch, price_compare, review_summary]
   order_agent:

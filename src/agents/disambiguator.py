@@ -132,6 +132,11 @@ async def disambiguate(
     for field in ambiguous_fields:
         value = entities.get(field)
 
+        # Skip fields that already have a concrete value assigned by entity extractor
+        if value is not None:
+            logger.info("field_already_resolved", field=field, value=value)
+            continue
+
         result = await _resolve_field(field, value, conversation_context, raw_query=raw_query)
         if result["resolved"]:
             resolved_entities[field] = result["value"]

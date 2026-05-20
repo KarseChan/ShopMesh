@@ -46,8 +46,9 @@ def validate_entities(entities: dict) -> dict:
 
     missing = []
 
-    # Rule 1: gender required for certain categories
-    if category in _GENDER_REQUIRED_CATEGORIES and not gender:
+    # Rule 1: gender required for certain categories (skip if brand is already specific)
+    brand = entities.get("brand")
+    if category in _GENDER_REQUIRED_CATEGORIES and not gender and not brand:
         missing.append("gender")
 
     # Rule 2: product_type should be specific for certain categories

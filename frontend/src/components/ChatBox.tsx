@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useChatStream, ChatMessage, Product, Recommendation, ClarificationQuestion, ToolCall } from "@/hooks/useChatStream";
 import ProductCard from "./ProductCard";
+import ComparisonTable, { type ComparisonData } from "./ComparisonTable";
 import OrderConfirm from "./OrderConfirm";
 
 export default function ChatBox() {
@@ -116,7 +117,16 @@ function MessageBubble({ message, onOrder, onOptionClick }: { message: ChatMessa
             {message.toolCalls && message.toolCalls.length > 0 && (
               <ToolCallBubble toolCalls={message.toolCalls} />
             )}
-            {message.recommendations && message.recommendations.length > 0 && message.products ? (
+            {message.responseType === "comparison_table" && message.responseData ? (
+              <>
+                <ComparisonTable data={message.responseData as unknown as ComparisonData} />
+                {message.content && (
+                  <div className="bg-gray-100 px-4 py-3 rounded-2xl rounded-bl-sm text-sm leading-relaxed text-gray-600">
+                    {message.content}
+                  </div>
+                )}
+              </>
+            ) : message.recommendations && message.recommendations.length > 0 && message.products ? (
               <>
                 {/* Interleaved: recommendation text + product card pairs */}
                 {message.recommendations.map((rec, i) => {

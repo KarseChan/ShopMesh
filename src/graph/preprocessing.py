@@ -160,18 +160,21 @@ async def _run_normal_preprocessing(user_input: str, user_id: str, state: dict) 
                 memory_count=len(memories),
                 soft_req_count=len(entities.get("soft_requirements", [])))
 
-    # Skip disambiguation for scenarios where null category/product_type is expected
-    if entities.get("ambiguous") and scenario not in _NO_DISAMBIGUATE_SCENARIOS:
+    # Skip disambiguation for scenarios where null category/product_type is expected,
+    # or for comparison queries (multiple brands are expected, disambiguation is irrelevant)
+    user_goal = intent.get("user_goal", "") if isinstance(intent, dict) else ""
+    if entities.get("ambiguous") and scenario not in _NO_DISAMBIGUATE_SCENARIOS and user_goal != "compare_products":
         entities["_raw_query"] = user_input
         disambig_result = await disambiguate(entities)
         entities = disambig_result["entities"]
         if not disambig_result["resolved"]:
             logger.info("disambiguation_pending", question=disambig_result.get("question"))
-    elif entities.get("ambiguous") and scenario in _NO_DISAMBIGUATE_SCENARIOS:
-        # Clear ambiguous flag — null category/product_type is expected for these scenarios
+    elif entities.get("ambiguous") and (scenario in _NO_DISAMBIGUATE_SCENARIOS or user_goal == "compare_products"):
+        # Clear ambiguous flag — disambiguation is not needed for these cases
         entities["ambiguous"] = False
         entities["ambiguous_fields"] = []
-        logger.info("disambiguation_skipped", reason=f"scenario '{scenario}' does not require disambiguation")
+        logger.info("disambiguation_skipped",
+                     reason=f"scenario '{scenario}'" if scenario in _NO_DISAMBIGUATE_SCENARIOS else f"intent '{user_goal}'")
 
     missing_fields = entities.get("missing_critical_fields", [])
     if missing_fields:

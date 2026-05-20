@@ -182,6 +182,27 @@ async def _run_agent_loop(state: dict, agent_name: str) -> dict:
                  content_preview=response.get("content", "")[:300])
 
     tool_calls = response.get("tool_calls")
+    content_text = response.get("content", "")
+
+    # Detect text-based tool call attempts (LLM output "Action: xxx" instead of tool_call)
+    if not tool_calls and content_text:
+        text_tool_match = re.match(r"^Action:\s*(\w+)", content_text.strip())
+        if text_tool_match:
+            logger.warning("agent_text_tool_call_detected", agent=agent_name,
+                           content=content_text[:200],
+                           iteration=state.get("iteration", 0))
+            # Retry: append reminder to use tool_calls and re-call LLM
+            messages.append({"role": "assistant", "content": content_text})
+            messages.append({"role": "user", "content":
+                "请使用工具调用（tool_call）格式调用工具，不要以文本形式输出 Action。"})
+            response = await llm.chat(messages, tools=tool_schemas)
+            tool_calls = response.get("tool_calls")
+            content_text = response.get("content", "")
+            logger.info("llm_response_retry", agent=agent_name,
+                         has_tool_calls=bool(tool_calls),
+                         content_len=len(content_text),
+                         content_preview=content_text[:300])
+
     if tool_calls:
         # Execute first tool call
         tc = tool_calls[0]
@@ -247,6 +268,8 @@ async def _run_agent_loop(state: dict, agent_name: str) -> dict:
         parsed = {k.strip().strip('"').strip("'").strip(): v for k, v in parsed.items()}
         if "recommendations" in parsed:
             recommendations = parsed["recommendations"]
+        elif "products" in parsed:
+            recommendations = parsed["products"]
         if "summary" in parsed:
             summary = parsed["summary"]
         elif "verdict" in parsed:

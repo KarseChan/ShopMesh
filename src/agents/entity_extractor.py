@@ -45,13 +45,16 @@ SYSTEM_PROMPT = (
     '  "ambiguous_fields": ["不确定的字段"]\n'
     "}\n"
     "品类只限：护肤、奶茶、数码、服饰、食品、家居、母婴、运动\n"
-    "product_type：用户提到的具体商品词，如'衬衫'、'T恤'、'外套'、'裤装'、'面膜'等。提取原词，不要改写。\n"
+    "product_type：用户提到的核心商品词，去掉场景/属性修饰词。如'商务双肩包'→'双肩包'、'轻薄防晒衣'→'防晒衣'、'男士运动鞋'→'运动鞋'。\n"
     "gender：用户明确提到的性别，如'男士'→'男'、'女生'→'女'、'男款'→'男'、'女款'→'女'。未提及则为null。\n"
     "preference：用户对商品品质的偏好描述，如'口碑好'、'销量高'、'大牌'、'便宜'、'轻薄'等。提取原词，不要改写。\n"
     "skin_type/concerns：仅当品类是护肤时才提取，其他品类设为null。\n"
     "hard_constraints：硬过滤条件，从已提取字段中选取必须满足的条件。"
     "通常包含 product_type（如有），也可能包含 brand、price_max 等。"
     "gender 不要放入 hard_constraints，它通过语义检索体现。\n"
+    "brand 处理：用户提到单个品牌时直接提取。"
+    "用户比较多品牌时（如'A和B哪个好'），brand 设为 null，"
+    "将各品牌以 soft_requirements 形式列出，type 为 'brand_compare'。\n"
     "soft_requirements：软需求列表，用户提到的非硬性偏好。每个元素：\n"
     '  {"raw_text": "用户原话", "canonical": "核心需求词", "type": "类型", "importance": 0.5-1.0}\n'
     "  raw_text：用户原话摘录，如'适合通勤'、'夏天穿的'、'想要轻薄的'\n"

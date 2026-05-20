@@ -192,21 +192,47 @@ async def run_multi_agent_stream(
 
         # Extract search results from tool_calls_log
         search_results = state_values.get("search_results", [])
+        tool_log = state_values.get("tool_calls_log", [])
         if not search_results:
-            for entry in reversed(state_values.get("tool_calls_log", [])):
+            seen_ids = set()
+            for entry in tool_log:
                 if entry.get("tool") in ("product_search", "multi_query_search"):
                     tool_data = entry.get("result", {})
-                    if isinstance(tool_data, dict):
-                        data = tool_data.get("data", tool_data)
-                        search_results = data.get("results", [])
-                    break
+                    if not isinstance(tool_data, dict):
+                        continue
+                    data = tool_data.get("data", tool_data)
+                    if not isinstance(data, dict):
+                        continue
+                    results_list = data.get("results", [])
+                    for r in results_list:
+                        rid = r.get("product_id") or r.get("id")
+                        if rid and rid not in seen_ids:
+                            seen_ids.add(rid)
+                            search_results.append(r)
 
-        recommendations = state_values.get("recommendations", []) or response_data.get("recommendations", [])
+        # Supplement from response_data: for compare/detail agents, response_data
+        # contains the full product list the agent wants to display.
+        if response_data:
+            resp_products = response_data.get("products", [])
+            if resp_products:
+                existing_ids = {p.get("product_id") or p.get("id") for p in search_results}
+                for rp in resp_products:
+                    rpid = rp.get("product_id")
+                    if rpid and rpid not in existing_ids:
+                        search_results.append(rp)
+                        existing_ids.add(rpid)
 
-        # Results event: only emit when there are actual recommendations.
-        # If agent only asked clarification (no search), search_results may be stale
-        # from the previous turn (checkpointer preserves them) but recommendations is empty.
-        if search_results and recommendations:
+        recommendations = (
+            state_values.get("recommendations", [])
+            or response_data.get("recommendations", [])
+            or response_data.get("products", [])
+        )
+
+        # Results event: emit when there are actual search results to display.
+        # For detail_card, search_results is the single product being detailed.
+        # For product_grid / recommendation_cards, search_results are the matched products.
+        # If agent only asked clarification (no search), search_results stays empty.
+        if search_results:
             # Collect product_ids referenced in recommendations
             rec_ids = {r.get("product_id", "") for r in recommendations if r.get("product_id")}
             # Ensure all recommended products are in the products list

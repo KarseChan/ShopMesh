@@ -26,6 +26,8 @@ export interface ChatMessage {
   options?: string[];
   questions?: ClarificationQuestion[];
   toolCalls?: ToolCall[];
+  responseType?: string;
+  responseData?: Record<string, unknown>;
   isLoading?: boolean;
 }
 
@@ -106,6 +108,8 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
       let currentOptions: string[] = [];
       let currentQuestions: ClarificationQuestion[] = [];
       let currentToolCalls: ToolCall[] = [];
+      let currentResponseType: string | undefined;
+      let currentResponseData: Record<string, unknown> | undefined;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -139,6 +143,9 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
                 currentQuestions = qs;
               }, (tc) => {
                 currentToolCalls = [...currentToolCalls, tc];
+              }, (rt, rd) => {
+                currentResponseType = rt;
+                currentResponseData = rd;
               });
             } catch {
               // Skip malformed JSON
@@ -159,6 +166,8 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
               options: currentOptions.length > 0 ? currentOptions : last.options,
               questions: currentQuestions.length > 0 ? currentQuestions : last.questions,
               toolCalls: currentToolCalls.length > 0 ? currentToolCalls : last.toolCalls,
+              responseType: currentResponseType || last.responseType,
+              responseData: currentResponseData || last.responseData,
               isLoading: false,
             };
           }
@@ -305,6 +314,7 @@ function handleSSEEvent(
   setOptions: (options: string[]) => void,
   setQuestions: (questions: ClarificationQuestion[]) => void,
   addToolCall?: (tc: ToolCall) => void,
+  setResponseType?: (rt: string | undefined, rd: Record<string, unknown> | undefined) => void,
 ) {
   switch (eventType) {
     case "intent":
@@ -323,6 +333,9 @@ function handleSSEEvent(
       setProducts((data.products as Product[]) || []);
       if (data.recommendations) {
         setRecommendations(data.recommendations as Recommendation[]);
+      }
+      if (setResponseType && data.response_type) {
+        setResponseType(data.response_type as string, data.response_data as Record<string, unknown>);
       }
       break;
     case "explanation":
