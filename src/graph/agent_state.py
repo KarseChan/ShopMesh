@@ -43,3 +43,8 @@ class AgentState(TypedDict):
 
     # === Clarification state ===
     pending_clarification: dict | None          # Awaiting clarification answer {fields, question_spec, question_type, strategy, entities_snapshot}
+
+    # === Multi-Agent routing ===
+    active_agent: str                           # Which specialized agent is active (e.g. "recommend_agent")
+    response_type: str                          # Frontend rendering hint (e.g. "recommendation_cards")
+    response_data: dict                         # Structured response data for frontend (parsed from agent JSON output)

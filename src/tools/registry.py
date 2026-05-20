@@ -29,6 +29,16 @@ def get_all_tool_schemas() -> list[dict]:
     return tool_registry.get_tool_schemas()
 
 
+def get_tools_by_names(names: list[str]) -> list[ToolDef]:
+    """Return ToolDefs matching the given names."""
+    return [t for t in tool_registry.get_all() if t.name in names]
+
+
+def get_tool_schemas_by_names(names: list[str]) -> list[dict]:
+    """Return OpenAI-compatible schemas for tools matching the given names."""
+    return [t.to_tool_schema() for t in tool_registry.get_all() if t.name in names]
+
+
 __all__ = [
     "ToolDef",
     "ToolRegistry",
@@ -36,4 +46,6 @@ __all__ = [
     "get_dynamic_tools",
     "get_tool_by_name",
     "get_all_tool_schemas",
+    "get_tools_by_names",
+    "get_tool_schemas_by_names",
 ]

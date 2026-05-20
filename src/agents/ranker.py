@@ -107,7 +107,10 @@ def select_rank_profile(entities: dict) -> str:
     if preference and any(kw in preference for kw in ["口碑", "销量", "大牌", "知名", "品牌", "质量"]):
         return "quality_sensitive"
 
-    if len(soft_reqs) >= 2:
+    # Filter out skipped/redundant types before counting
+    _skip_types = _META_REQ_TYPES | _REDUNDANT_REQ_TYPES
+    actionable_reqs = [r for r in soft_reqs if r.get("type", "") not in _skip_types]
+    if len(actionable_reqs) >= 2:
         return "scenario_preference"
 
     return "default"
@@ -222,12 +225,22 @@ def _terms_match_score(terms: list[str], product_text: str) -> tuple[float, list
     return hits / len(terms), matched_terms
 
 
+# Meta-requirement types that are contextual, not product-level attributes.
+# These should not be keyword-matched against product text.
+_META_REQ_TYPES = {"gift_context", "recipient_context"}
+
+# Soft requirement types that are already covered by hard constraints
+# and should not participate in attribute matching.
+_REDUNDANT_REQ_TYPES = {"price_preference"}
+
+
 def _score_attribute_match(
     product: dict, soft_requirements: list[dict]
 ) -> tuple[float, dict[str, dict]]:
     """Score product against all soft_requirements using keyword+synonym matching.
 
     Supports both normalized format (with terms list) and legacy format (text only).
+    Meta-requirements (gift_context etc.) are skipped — they're contextual, not product attributes.
 
     Returns (weighted_score, attribute_scores) where attribute_scores maps
     req_text → {"score": float, "matched_terms": list[str]}.
@@ -241,16 +254,34 @@ def _score_attribute_match(
     attribute_scores = {}
 
     for req in soft_requirements:
+        req_type = req.get("type", "")
         importance = req.get("importance", 0.7)
+        display_key = req.get("canonical") or req.get("raw_text", "") or req.get("text", "")
+
+        # Skip meta-requirements (gift_context etc.) — they don't match product attributes
+        if req_type in _META_REQ_TYPES:
+            attribute_scores[display_key] = {
+                "score": 0.0,
+                "matched_terms": [],
+                "skipped": True,
+            }
+            continue
+
+        # Skip redundant requirements (price_preference etc.) — already covered by hard constraints
+        if req_type in _REDUNDANT_REQ_TYPES:
+            attribute_scores[display_key] = {
+                "score": 0.0,
+                "matched_terms": [],
+                "skipped": True,
+            }
+            continue
 
         # Normalized format: use pre-expanded terms
         if "terms" in req and req["terms"]:
-            display_key = req.get("canonical") or req.get("raw_text", "")
             score, matched = _terms_match_score(req["terms"], product_text)
         else:
             # Legacy format: use text with keyword matching
-            display_key = req.get("text", "")
-            score, matched = _keyword_match_score(display_key, product_text)
+            score, matched = _keyword_match_score(req.get("text", ""), product_text)
 
         total_score += score * importance
         total_weight += importance
@@ -356,6 +387,12 @@ def rank(
         profile_name = select_rank_profile(ents)
         final_weights = RANK_PROFILES[profile_name]
 
+    # Detect meta-requirements (gift_context etc.) for scenario boost
+    has_meta_scenario = any(
+        req.get("type", "") in _META_REQ_TYPES
+        for req in soft_requirements
+    )
+
     ranked = []
     for i, product in enumerate(products):
         search_score = scores[i] if i < len(scores) else 0.5
@@ -382,6 +419,12 @@ def rank(
         # Product type match penalty (multiplicative)
         pt_match = reasons["product_type_match"]
         composite *= pt_match
+
+        # Scenario boost: for meta-scenarios (gift etc.), boost by reputation + price fit
+        # since attribute_match can't capture contextual requirements
+        if has_meta_scenario:
+            scenario_boost = reasons["reputation"] * 0.06 + reasons["price"] * 0.04
+            composite += scenario_boost
 
         entry = {
             **product,

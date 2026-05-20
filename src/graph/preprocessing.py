@@ -17,6 +17,9 @@ from src.memory.memory_retriever import recall, should_recall
 from src.observability.logger import get_logger
 from src.router.intent_classifier import classify_intent
 
+# Scenarios where null category/product_type is expected (not ambiguous)
+_NO_DISAMBIGUATE_SCENARIOS = {"送礼", "礼物", "生日礼物", "节日礼物", "情人节", "圣诞节"}
+
 logger = get_logger("preprocessing")
 
 
@@ -53,18 +56,36 @@ async def _run_normal_preprocessing(user_input: str, user_id: str, state: dict) 
 
     entities = validate_entities(entities)
 
+    # Auto-inject gift_context soft_requirement when scenario is gift-related
+    # but LLM didn't extract any soft_requirements (LLM extraction is unstable)
+    scenario = entities.get("scenario", "")
+    if scenario in _NO_DISAMBIGUATE_SCENARIOS and not entities.get("soft_requirements"):
+        entities["soft_requirements"] = normalize_soft_requirements([{
+            "raw_text": f"{scenario}场景",
+            "canonical": scenario,
+            "type": "gift_context",
+            "importance": 0.8,
+        }])
+        logger.info("auto_injected_soft_requirement", scenario=scenario, type="gift_context")
+
     logger.info("preprocess_done",
                 intent=intent, confidence=confidence, source=source,
                 entity_category=entities.get("category"),
                 memory_count=len(memories),
                 soft_req_count=len(entities.get("soft_requirements", [])))
 
-    if entities.get("ambiguous"):
+    # Skip disambiguation for scenarios where null category/product_type is expected
+    if entities.get("ambiguous") and scenario not in _NO_DISAMBIGUATE_SCENARIOS:
         entities["_raw_query"] = user_input
         disambig_result = await disambiguate(entities)
         entities = disambig_result["entities"]
         if not disambig_result["resolved"]:
             logger.info("disambiguation_pending", question=disambig_result.get("question"))
+    elif entities.get("ambiguous") and scenario in _NO_DISAMBIGUATE_SCENARIOS:
+        # Clear ambiguous flag — null category/product_type is expected for these scenarios
+        entities["ambiguous"] = False
+        entities["ambiguous_fields"] = []
+        logger.info("disambiguation_skipped", reason=f"scenario '{scenario}' does not require disambiguation")
 
     missing_fields = entities.get("missing_critical_fields", [])
     if missing_fields:

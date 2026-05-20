@@ -19,13 +19,15 @@ async def product_search(
     entities: dict,
     semantic_query: str,
     top_k: int = 10,
+    max_results: int = 10,
 ) -> dict:
     """One-stop product retrieval: hybrid search + multi-objective ranking.
 
     Args:
         entities: Structured entities (category, brand, price_max, scenario, etc.)
         semantic_query: Semantic search text (keywords/description from user need)
-        top_k: Number of results to return
+        top_k: Number of results to retrieve from vector search
+        max_results: Max results to return (caps ranked output, saves LLM tokens)
 
     Returns:
         {"results": [...], "total": int, "filter_applied": bool, "latency_ms": float}
@@ -46,7 +48,10 @@ async def product_search(
     # Step 3: Multi-objective ranking
     ranked = rank(products, search_scores=search_scores, entities=entities)
 
-    # Step 4: Split exact vs supplemental matches
+    # Step 4: Cap results to save LLM tokens
+    ranked = ranked[:max_results]
+
+    # Step 5: Split exact vs supplemental matches
     product_type = entities.get("product_type")
     exact_ids, supplemental_ids = _split_matches(ranked, product_type)
 
@@ -64,7 +69,7 @@ async def product_search(
         "supplemental": len(supplemental_ids),
         "exact_product_ids": exact_ids,
         "supplemental_product_ids": supplemental_ids,
-        "display_product_ids": exact_ids,  # Agent 主推荐只用这个
+        "display_product_ids": exact_ids,
         "filter_applied": search_result["filter_applied"],
         "latency_ms": search_result["latency_ms"],
     }
@@ -105,8 +110,13 @@ tool_registry.register(ToolDef(
             },
             "top_k": {
                 "type": "integer",
-                "description": "返回结果数量，默认 10",
+                "description": "向量检索数量，默认 10",
                 "default": 10,
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "最终返回数量（排序后截断），默认 5。推荐场景用 5，搜索场景可用 10。",
+                "default": 5,
             },
         },
         "required": ["entities", "semantic_query"],

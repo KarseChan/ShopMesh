@@ -24,6 +24,7 @@ async def multi_query_search(
     search_requests: list[dict],
     entities: dict,
     per_type_top_k: int = 5,
+    max_results: int = 10,
 ) -> dict:
     """Execute multiple search requests and merge results.
 
@@ -31,10 +32,11 @@ async def multi_query_search(
         search_requests: List of {query, product_type, top_k} from search_planner
         entities: Shared entity constraints (category, gender, price_max, etc.)
         per_type_top_k: Max results per product_type group in final output
+        max_results: Max total results to return (caps ranked output, saves LLM tokens)
 
     Returns:
         {
-            "results": [...],           # Merged and re-ranked products
+            "results": [...],           # Merged and re-ranked products (capped by max_results)
             "total": int,               # Total unique products
             "by_type": {...},           # Products grouped by product_type
             "queries_executed": int,    # Number of queries executed
@@ -88,6 +90,9 @@ async def multi_query_search(
 
     # Re-rank merged results
     ranked = rank(all_products, search_scores=all_scores, entities=entities)
+
+    # Cap results to save LLM tokens
+    ranked = ranked[:max_results]
 
     # Group by product_type
     by_type = {}
@@ -144,6 +149,11 @@ tool_registry.register(ToolDef(
             "per_type_top_k": {
                 "type": "integer",
                 "description": "每个品类最多返回数量，默认 5",
+                "default": 5,
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "最终返回总数（排序后截断），默认 5。推荐场景用 5，搜索场景可用 10。",
                 "default": 5,
             },
         },

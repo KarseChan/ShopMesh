@@ -26,6 +26,9 @@ _VAGUE_PRODUCT_TYPES = {"衣服", "穿搭", "搭配", "一套", "套装", "服�
 # Scenarios that benefit from multi-query outfit search
 _OUTFIT_SCENARIOS = {"面试", "上班", "通勤", "约会", "婚礼", "答辩", "出差", "旅行", "毕业典礼"}
 
+# Scenarios that benefit from multi-query gift/category exploration
+_GIFT_SCENARIOS = {"送礼", "礼物", "生日礼物", "节日礼物", "情人节", "圣诞节"}
+
 # Well-defined product types that don't need planning
 _SPECIFIC_PRODUCT_TYPES = {
     "衬衫", "T恤", "Polo衫", "卫衣", "外套", "夹克", "西装", "针织衫", "羽绒服",
@@ -42,6 +45,9 @@ _PLANNER_PROMPT = (
     "2. 为每个商品类型生成一个语义查询（query），包含场景和风格描述\n"
     "3. query 要简洁，突出场景+风格+品类，不超过 15 字\n"
     "4. 最后一条保留原始用户查询，product_type 设为 null\n\n"
+    "送礼场景特别规则：\n"
+    "- 选择跨品类的商品类型（如双肩包、运动鞋、钱包等），覆盖不同送礼方向\n"
+    "- query 中突出送礼属性：精致、礼盒、高档、实用\n\n"
     "可用的商品类型（从以下选择，不要自创）：\n"
     "衬衫, T恤, Polo衫, 卫衣, 外套, 夹克, 西装, 针织衫, 羽绒服, "
     "裤子, 裤装, 牛仔裤, 西裤, 休闲裤, 短裤, 裙子, 裙装, 半身裙, 长裙, "
@@ -83,6 +89,10 @@ def _should_use_multi_query(entities: dict) -> tuple[bool, str]:
     # Rule 2: outfit scenario + vague/empty product type
     if scenario and scenario in _OUTFIT_SCENARIOS and _is_vague_product_type(product_type):
         return True, f"场景 '{scenario}' + 模糊品类，需要多品类穿搭检索"
+
+    # Rule 2b: gift scenario — need to explore multiple product categories
+    if scenario and scenario in _GIFT_SCENARIOS and _is_vague_product_type(product_type):
+        return True, f"场景 '{scenario}' + 无明确品类，需要多品类礼品探索"
 
     # Rule 3: multiple soft requirements + vague product type
     if len(soft_reqs) >= 2 and _is_vague_product_type(product_type):
