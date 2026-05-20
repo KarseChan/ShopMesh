@@ -1326,3 +1326,76 @@ for attempt in range(_MAX_RETRIES):
 | `frontend/src/hooks/useChatStream.ts` | error 事件移除"错误："前缀 |
 
 **状态**: 已修复
+
+---
+
+## P28: Path A 无任务切换检测 — 跨任务价格约束被错误继承
+
+**发现时间**: 2026-05-20
+
+**现象**: 用户先问"我想买个送朋友的礼物，预算 200 左右"，系统提取 `scenario: "送礼"`, `price_max: 250`。然后用户说"我下周面试，想买正式但不老气的衣服"，系统从上一轮继承了 `price_max: 250`，导致面试正装检索结果不足。
+
+**根因**: Path A（`_run_normal_preprocessing`）的上下文继承逻辑无条件继承所有缺失字段（包括 `price_min`, `price_max`, `scenario`），没有判断用户是否切换了任务。Path B（`clarification_router.py`）有任务切换检测，但 Path A 没有。
+
+**解决方案**: 在 `_run_normal_preprocessing` 中新增 `_detect_task_switch()` 函数，在继承前判断是否发生了任务切换：
+
+1. **检测信号**: scenario 变化（"送礼" → "面试"）、category 变化（"服饰" → "数码"）、product_type 变化（"双肩包" → "手机"，排除同类服饰内切换）
+2. **任务切换时**: 只继承结构性字段（category, product_type, brand），跳过任务特定字段（scenario, price_min, price_max, soft_requirements）
+3. **同一任务时**: 保持原有逻辑，继承所有缺失字段 + hard_constraints 合并
+
+```python
+def _detect_task_switch(current: dict, previous: dict) -> bool:
+    # Scenario changed → task switch
+    if prev_scenario and cur_scenario and prev_scenario != cur_scenario:
+        return True
+    # Category changed → task switch
+    if prev_category and cur_category and prev_category != cur_category:
+        return True
+    # Product type changed (excluding same clothing family) → task switch
+    if prev_pt and cur_pt and prev_pt != cur_pt:
+        if prev_pt in _CLOTHING_TYPES and cur_pt in _CLOTHING_TYPES:
+            return False
+        return True
+    return False
+```
+
+**修改文件**:
+
+| 文件 | 改动 |
+|------|------|
+| `src/graph/preprocessing.py` | 新增 `_detect_task_switch()` + 继承逻辑分支（task_switch vs continuation） |
+
+**状态**: 已修复
+
+---
+
+## P29: 澄清追问时前端仍显示上一轮商品卡片
+
+**发现时间**: 2026-05-20
+
+**现象**: 用户第一轮"送礼 预算200"得到推荐后，第二轮"面试 买衣服"触发澄清追问（"请问您是男生还是女生？"），但前端在追问下方仍然显示了上一轮的 10 个商品卡片。
+
+**根因**: `run_multi_agent_stream` 中 `search_results` 的提取逻辑从 `state_values.get("search_results", [])` 或 `tool_calls_log` 获取。当 agent 只调用 `ask_clarification` 而未调用搜索工具时：
+- `search_results` 未被本轮 agent 覆盖，checkpointer 保留了上一轮的值（10 个商品）
+- `tool_calls_log` 是 reducer（`_add_lists`），跨轮累积，包含上一轮的 `multi_query_search` 记录
+- `recommendations` 为空 `[]`（agent 没有生成推荐）
+- 但 `if search_results:` 判断为 True → 发送了旧商品的 `results` 事件
+
+**解决方案**: 在发送 `results` 事件前，同时检查 `search_results` 和 `recommendations`。只有两者都非空时才发送。没有推荐 = 澄清/纯文本回复，不需要商品卡片。
+
+```python
+# 修复前
+if search_results:
+
+# 修复后
+if search_results and recommendations:
+```
+
+**修改文件**:
+
+| 文件 | 改动 |
+|------|------|
+| `src/graph/multi_agent_graph.py` | `results` 事件发送条件增加 `and recommendations` |
+| `src/graph/shopping_agent.py` | 同上 |
+
+**状态**: 已修复

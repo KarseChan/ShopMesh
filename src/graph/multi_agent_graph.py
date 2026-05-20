@@ -203,8 +203,10 @@ async def run_multi_agent_stream(
 
         recommendations = state_values.get("recommendations", []) or response_data.get("recommendations", [])
 
-        # Results event: send all products so frontend can render any recommended product
-        if search_results:
+        # Results event: only emit when there are actual recommendations.
+        # If agent only asked clarification (no search), search_results may be stale
+        # from the previous turn (checkpointer preserves them) but recommendations is empty.
+        if search_results and recommendations:
             # Collect product_ids referenced in recommendations
             rec_ids = {r.get("product_id", "") for r in recommendations if r.get("product_id")}
             # Ensure all recommended products are in the products list

@@ -34,6 +34,57 @@ def _get_user_input(state: dict) -> str:
     return getattr(msg, "content", "")
 
 
+def _detect_task_switch(current: dict, previous: dict) -> bool:
+    """Detect if user switched to a different task between turns.
+
+    Returns True if the current turn's scenario/category/product_type differs
+    significantly from the previous turn, meaning task-specific context (price,
+    scenario, soft_requirements) should NOT be inherited.
+
+    Structural fields (category, product_type, brand) can still be inherited
+    as search narrowing hints.
+    """
+    if not previous:
+        return False
+
+    prev_scenario = previous.get("scenario", "")
+    cur_scenario = current.get("scenario", "")
+
+    # Scenario changed → definite task switch (e.g. "送礼" → "面试")
+    if prev_scenario and cur_scenario and prev_scenario != cur_scenario:
+        logger.info("task_switch_detected", signal="scenario_changed",
+                    prev=prev_scenario, cur=cur_scenario)
+        return True
+
+    prev_category = previous.get("category", "")
+    cur_category = current.get("category", "")
+
+    # Cross-category switch (e.g. "服饰" → "数码")
+    if prev_category and cur_category and prev_category != cur_category:
+        logger.info("task_switch_detected", signal="category_changed",
+                    prev=prev_category, cur=cur_category)
+        return True
+
+    prev_pt = previous.get("product_type", "")
+    cur_pt = current.get("product_type", "")
+
+    # Different product_type with no overlap (e.g. "双肩包" → "手机")
+    # But NOT if current has no product_type (just a follow-up like "再推荐女士的")
+    if prev_pt and cur_pt and prev_pt != cur_pt:
+        # Check if they're in the same broad clothing family
+        _CLOTHING_TYPES = {"衬衫", "T恤", "Polo衫", "卫衣", "外套", "夹克", "西装",
+                           "西装外套", "针织衫", "羽绒服", "裤子", "裤装", "牛仔裤",
+                           "西裤", "休闲裤", "短裤", "裙子", "裙装", "半身裙",
+                           "长裙", "连衣裙", "衣服", "穿搭", "正装"}
+        if prev_pt in _CLOTHING_TYPES and cur_pt in _CLOTHING_TYPES:
+            return False  # Same clothing family, not a switch
+        logger.info("task_switch_detected", signal="product_type_changed",
+                    prev=prev_pt, cur=cur_pt)
+        return True
+
+    return False
+
+
 async def _run_normal_preprocessing(user_input: str, user_id: str, state: dict) -> dict:
     """Path A: normal intent + entity + memory extraction (parallel)."""
     intent_task = classify_intent(user_input)
@@ -53,20 +104,38 @@ async def _run_normal_preprocessing(user_input: str, user_id: str, state: dict) 
 
     # Context carry-forward: inherit missing fields from previous turn's entities
     prev_entities = state.get("entities", {})
+    task_switched = _detect_task_switch(entities, prev_entities)
+
     if prev_entities:
-        for field in ("category", "product_type", "brand", "scenario", "price_min", "price_max"):
-            if not entities.get(field) and prev_entities.get(field):
-                entities[field] = prev_entities[field]
-                logger.info("context_inherited", field=field, value=str(prev_entities[field])[:50])
-        # Merge hard_constraints from previous turn (e.g. price range) into current
-        prev_hc = prev_entities.get("hard_constraints", {})
-        cur_hc = entities.get("hard_constraints", {})
-        if prev_hc:
-            merged = {**prev_hc, **cur_hc}  # current overrides previous
-            entities["hard_constraints"] = merged
-            if merged != cur_hc:
-                logger.info("context_inherited_hard_constraints",
-                             merged_keys=list(merged.keys()))
+        if task_switched:
+            # Task switch: only inherit structural fields, skip task-specific ones
+            _STRUCTURAL_FIELDS = ("category", "product_type", "brand")
+            _TASK_SPECIFIC_FIELDS = ("scenario", "price_min", "price_max", "soft_requirements")
+            for field in _STRUCTURAL_FIELDS:
+                if not entities.get(field) and prev_entities.get(field):
+                    entities[field] = prev_entities[field]
+                    logger.info("context_inherited_structural", field=field,
+                                value=str(prev_entities[field])[:50])
+            skipped = [f for f in _TASK_SPECIFIC_FIELDS if prev_entities.get(f)]
+            if skipped:
+                logger.info("context_inheritance_skipped", reason="task_switch",
+                            skipped_fields=skipped)
+        else:
+            # Same task continuation: inherit all missing fields
+            for field in ("category", "product_type", "brand", "scenario", "price_min", "price_max"):
+                if not entities.get(field) and prev_entities.get(field):
+                    entities[field] = prev_entities[field]
+                    logger.info("context_inherited", field=field,
+                                value=str(prev_entities[field])[:50])
+            # Merge hard_constraints from previous turn (e.g. price range) into current
+            prev_hc = prev_entities.get("hard_constraints", {})
+            cur_hc = entities.get("hard_constraints", {})
+            if prev_hc:
+                merged = {**prev_hc, **cur_hc}  # current overrides previous
+                entities["hard_constraints"] = merged
+                if merged != cur_hc:
+                    logger.info("context_inherited_hard_constraints",
+                                merged_keys=list(merged.keys()))
 
     if entities.get("soft_requirements"):
         entities["soft_requirements"] = normalize_soft_requirements(entities["soft_requirements"])

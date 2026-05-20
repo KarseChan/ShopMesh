@@ -182,8 +182,8 @@ async def run_agent_stream(
         # Get structured recommendations
         recommendations = state_values.get("recommendations", [])
 
-        # Send results event (products + per-product recommendations)
-        if search_results:
+        # Send results event only when there are actual recommendations
+        if search_results and recommendations:
             top_results = search_results[:5]
             # Filter recommendations to only include products in top_results
             top_ids = {p.get("product_id", "") for p in top_results}
