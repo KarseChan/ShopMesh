@@ -23,6 +23,11 @@ class AgentState(TypedDict):
     # === Dialog ===
     messages: Annotated[list, add_messages]   # Dialog history
     user_id: str                               # User ID
+    session_id: str                             # Session ID (for Redis keys)
+
+    # === Session memory (L2a/L2b) ===
+    session_window: list                        # L2a: recent N turns from Redis
+    session_summary: str                        # L2b: LLM-compressed older turns
 
     # === Deterministic preprocessing output ===
     intent: dict                               # Intent classification result {user_goal, task_type, execution_hint}

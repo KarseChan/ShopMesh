@@ -22,6 +22,39 @@ MSG_KEY = "session:{sid}:messages"
 SUMMARY_KEY = "session:{sid}:summary"
 MSG_TTL = 3600 * 24  # 24 hours
 
+# Lua script: atomically verify head → LTRIM + SET summary
+# Keys: [msg_key, summary_key]
+# Args: [evict_count, new_summary, ttl, expected_head_json]
+_TRIM_LUA = """
+local msg_key = KEYS[1]
+local summary_key = KEYS[2]
+local evict_count = tonumber(ARGV[1])
+local new_summary = ARGV[2]
+local ttl = tonumber(ARGV[3])
+local expected_json = ARGV[4]
+
+-- Get current head of list
+local current_head = redis.call('LRANGE', msg_key, 0, evict_count - 1)
+
+-- Parse expected head from JSON
+local expected = cjson.decode(expected_json)
+
+-- Verify head matches (same messages in same order)
+if #current_head ~= #expected then
+    return 0
+end
+for i = 1, #current_head do
+    if current_head[i] ~= expected[i] then
+        return 0
+    end
+end
+
+-- Head matches: atomically trim + update summary
+redis.call('LTRIM', msg_key, evict_count, -1)
+redis.call('SET', summary_key, new_summary, 'EX', ttl)
+return 1
+"""
+
 
 class SessionMemory:
     """Per-session memory backed by Redis."""
@@ -60,33 +93,37 @@ class SessionMemory:
     async def trim(self) -> str | None:
         """Trim messages beyond the sliding window, compress evicted turns.
 
+        Race-condition safe implementation:
+        1. LRANGE to copy (not pop) the oldest N messages
+        2. LLM compress (1~3s, List untouched during this time)
+        3. Lua script atomically: verify head still matches → LTRIM + SET summary
+
+        If head changed during LLM compression (e.g. new RPUSH happened),
+        the Lua script returns 0 and we abort — next trim call will retry.
+
         Returns the updated summary, or None if no trimming needed.
         """
-        count = await self._redis.llen(self._msg_key())
+        msg_key = self._msg_key()
+        summary_key = self._summary_key()
+        count = await self._redis.llen(msg_key)
         max_messages = WINDOW_SIZE * 2  # 2 messages per turn (user + assistant)
 
         if count <= max_messages:
             return None
 
-        # Evict oldest turns
+        # Step 1: LRANGE copy (does NOT modify the List)
         evict_count = count - max_messages
-        evicted_raw = []
-        for _ in range(evict_count):
-            item = await self._redis.lpop(self._msg_key())
-            if item:
-                evicted_raw.append(item)
-
+        evicted_raw = await self._redis.lrange(msg_key, 0, evict_count - 1)
         if not evicted_raw:
             return None
 
-        # Parse evicted messages
+        # Step 2: LLM compression (slow, 1~3s — List can be RPUSHed during this)
         evicted = []
         for item in evicted_raw:
             pair = json.loads(item)
             evicted.append({"role": "user", "content": pair["user"]})
             evicted.append({"role": "assistant", "content": pair["assistant"]})
 
-        # Compress evicted + existing summary
         existing_summary = await self.get_summary()
         to_compress = []
         if existing_summary:
@@ -94,11 +131,25 @@ class SessionMemory:
         to_compress.extend(evicted)
 
         new_summary = await compress(to_compress)
-        await self._redis.set(self._summary_key(), new_summary, ex=MSG_TTL)
 
-        logger.info("trimmed", session_id=self.session_id,
-                     evicted=evict_count, summary_len=len(new_summary))
-        return new_summary
+        # Step 3: Lua script atomic verify + trim
+        expected_json = json.dumps(evicted_raw, ensure_ascii=False)
+        result = await self._redis.eval(
+            _TRIM_LUA,
+            2,  # number of keys
+            msg_key, summary_key,
+            evict_count, new_summary, MSG_TTL, expected_json,
+        )
+
+        if result == 1:
+            logger.info("trimmed", session_id=self.session_id,
+                         evicted=evict_count, summary_len=len(new_summary))
+            return new_summary
+        else:
+            # Head changed during LLM compression — abort, retry next time
+            logger.warning("trim_aborted", session_id=self.session_id,
+                           reason="head_changed_during_compression")
+            return None
 
     async def clear(self) -> None:
         """Delete all memory for this session."""

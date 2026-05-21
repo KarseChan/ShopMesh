@@ -101,9 +101,37 @@ def _format_memory(memory_chunks: list) -> str:
     for m in memory_chunks[:3]:  # Limit to 3 to control prompt size
         text = m.get("text", "")
         score = m.get("score", 0)
+        days = m.get("days_old", 0)
+        time_label = f"{days}天前" if days > 0 else "今天"
         if text:
-            lines.append(f"- [{score:.2f}] {text[:100]}")
+            lines.append(f"- [{time_label}] {text[:100]}")
     return "\n".join(lines) if lines else "无历史记忆"
+
+
+def _format_session_summary(summary: str) -> str:
+    """Format L2b session summary for prompt display."""
+    if not summary:
+        return ""
+    return f"历史摘要: {summary}"
+
+
+def _format_user_profile(profile: dict) -> str:
+    """Format L3 user profile for prompt display."""
+    if not profile:
+        return ""
+    parts = []
+    if profile.get("preferred_brands"):
+        parts.append(f"偏好品牌: {', '.join(profile['preferred_brands'][:3])}")
+    sensitivity = profile.get("price_sensitivity")
+    if sensitivity is not None and sensitivity != 0.5:
+        level = "高" if sensitivity > 0.7 else "低"
+        parts.append(f"价格敏感度: {level}")
+    if profile.get("price_range"):
+        pr = profile["price_range"]
+        parts.append(f"预算区间: {pr[0]}-{pr[1]}元")
+    if profile.get("scenario"):
+        parts.append(f"使用场景: {profile['scenario']}")
+    return "，".join(parts) if parts else ""
 
 
 def _format_search_plan(search_plan: dict) -> str:
@@ -161,7 +189,8 @@ def build_system_prompt(state: dict) -> str:
     """Build the ReAct system prompt with preprocessed context.
 
     Args:
-        state: AgentState containing intent, entities, memory_chunks, search_plan
+        state: AgentState containing intent, entities, memory_chunks, search_plan,
+               session_summary, user_profile
 
     Returns:
         Formatted system prompt string
@@ -171,29 +200,58 @@ def build_system_prompt(state: dict) -> str:
     entities = state.get("entities", {})
     memory_chunks = state.get("memory_chunks", [])
     search_plan = state.get("search_plan", {})
+    session_summary = state.get("session_summary", "")
+    user_profile = state.get("user_profile", {})
 
     tools = get_dynamic_tools()
 
-    return _SYSTEM_TEMPLATE.format(
+    # Build context sections
+    context_parts = []
+
+    profile_str = _format_user_profile(user_profile)
+    if profile_str:
+        context_parts.append(f"【用户画像】{profile_str}")
+
+    summary_str = _format_session_summary(session_summary)
+    if summary_str:
+        context_parts.append(f"【历史脉络】{summary_str}")
+
+    memory_str = _format_memory(memory_chunks)
+    if memory_str and memory_str != "无历史记忆":
+        context_parts.append(f"【历史事实】\n{memory_str}")
+
+    context_block = "\n".join(context_parts) if context_parts else ""
+
+    system_prompt = _SYSTEM_TEMPLATE.format(
         intent=_format_intent(intent),
         confidence=f"{confidence:.2f}",
         entities=_format_entities(entities),
-        memory_summary=_format_memory(memory_chunks),
+        memory_summary=memory_str,
         search_plan=_format_search_plan(search_plan),
         tool_descriptions=_format_tool_descriptions(tools),
     )
+
+    # Prepend context block (profile + summary) before the main system prompt
+    if context_block:
+        system_prompt = f"{context_block}\n\n{system_prompt}"
+
+    return system_prompt
 
 
 def build_react_messages(state: dict) -> list[dict]:
     """Build the full message list for ReAct LLM call.
 
-    Returns: [system_prompt, ...dialog_history]
+    Returns: [system_prompt, ...session_window, ...dialog_history, ...tool_observations]
     """
     system_prompt = build_system_prompt(state)
-
     messages = [{"role": "system", "content": system_prompt}]
 
-    # Append dialog history
+    # Inject L2a session window (historical turns from Redis)
+    session_window = state.get("session_window", [])
+    if session_window:
+        messages.extend(session_window)
+
+    # Append current dialog history
     for msg in state.get("messages", []):
         if isinstance(msg, dict):
             messages.append({"role": msg.get("role", "user"), "content": msg.get("content", "")})

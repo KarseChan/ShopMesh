@@ -115,6 +115,9 @@ async def run_agent_stream(
     initial_state = {
         "messages": initial_messages,
         "user_id": user_id,
+        "session_id": tid,
+        "session_window": [],
+        "session_summary": "",
         "intent": {},
         # entities: 不覆盖，让 checkpointer 保留前一轮值，实现 follow-up 上下文继承
         "memory_chunks": [],
