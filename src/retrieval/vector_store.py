@@ -13,6 +13,11 @@ class VectorStore(ABC):
         ...
 
     @abstractmethod
+    async def create_payload_index(self, collection: str, field_name: str, field_type: str) -> None:
+        """Create a payload index for efficient filtering."""
+        ...
+
+    @abstractmethod
     async def upsert(self, collection: str, ids: list[str],
                      vectors: list[list[float]], payloads: list[dict]) -> None:
         ...
@@ -21,6 +26,11 @@ class VectorStore(ABC):
     async def search(self, collection: str, query_vector: list[float],
                      limit: int = 10, filters: dict | None = None) -> list[dict]:
         """Search with optional payload filters. Returns list of {id, score, payload}."""
+        ...
+
+    @abstractmethod
+    async def delete_by_filter(self, collection: str, filters: dict) -> None:
+        """Delete points matching the filter conditions."""
         ...
 
 
@@ -36,6 +46,21 @@ class QdrantVectorStore(VectorStore):
         await self._client.create_collection(
             collection_name=collection,
             vectors_config=VectorParams(size=dimension, distance=Distance.COSINE),
+        )
+
+    async def create_payload_index(self, collection: str, field_name: str, field_type: str) -> None:
+        from qdrant_client.models import PayloadSchemaType
+        type_map = {
+            "keyword": PayloadSchemaType.KEYWORD,
+            "float": PayloadSchemaType.FLOAT,
+            "integer": PayloadSchemaType.INTEGER,
+            "text": PayloadSchemaType.TEXT,
+        }
+        schema_type = type_map.get(field_type, PayloadSchemaType.KEYWORD)
+        await self._client.create_payload_index(
+            collection_name=collection,
+            field_name=field_name,
+            field_schema=schema_type,
         )
 
     async def upsert(self, collection: str, ids: list[str],
@@ -64,6 +89,29 @@ class QdrantVectorStore(VectorStore):
             query_filter=query_filter,
         )
         return [{"id": r.id, "score": r.score, "payload": r.payload} for r in results.points]
+
+    async def delete_by_filter(self, collection: str, filters: dict) -> None:
+        from qdrant_client.models import FieldCondition, Filter, MatchValue, Range
+        conditions = []
+        for key, value in filters.items():
+            if isinstance(value, dict) and "range" in value:
+                range_spec = value["range"]
+                conditions.append(FieldCondition(
+                    key=key,
+                    range=Range(
+                        lt=range_spec.get("lt"),
+                        gt=range_spec.get("gt"),
+                        lte=range_spec.get("lte"),
+                        gte=range_spec.get("gte"),
+                    ),
+                ))
+            else:
+                conditions.append(FieldCondition(key=key, match=MatchValue(value=value)))
+        query_filter = Filter(must=conditions)
+        await self._client.delete(
+            collection_name=collection,
+            points_selector=query_filter,
+        )
 
 
 def get_vector_store() -> VectorStore:

@@ -28,12 +28,16 @@ class UserProfile(SQLModel, table=True):
     __tablename__ = "user_profiles"
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    user_id: str = Field(index=True, unique=True)
+    user_id: str = Field(index=True)
     category: str = Field(index=True)  # per-category profile
     price_sensitivity: float = 0.5
     preferred_brands: str = ""  # JSON array as string
     visit_count: int = 0
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    class Config:
+        # Composite unique constraint: one profile per (user_id, category)
+        unique_together = ("user_id", "category")
 
 
 class SessionRecord(SQLModel, table=True):

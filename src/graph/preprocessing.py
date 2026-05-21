@@ -13,8 +13,9 @@ from src.agents.entity_extractor import extract_entities
 from src.agents.entity_validator import validate_entities
 from src.agents.normalizer import normalize_soft_requirements
 from src.agents.search_planner import plan_search
-from src.memory.memory_retriever import recall, should_recall
+from src.memory.memory_retriever import recall, should_recall_dual
 from src.memory.session_memory import get_session_memory
+from src.memory.user_profile import get_global_profile
 from src.observability.logger import get_logger
 from src.router.intent_classifier import classify_intent
 
@@ -92,8 +93,13 @@ async def _run_normal_preprocessing(user_input: str, user_id: str, state: dict) 
     entity_task = extract_entities(user_input)
 
     prev_category = state.get("entities", {}).get("category")
-    if should_recall(user_input, current_category=None, prev_category=prev_category):
+    do_recall, recall_reason = await should_recall_dual(
+        user_input, user_id,
+        current_category=None, prev_category=prev_category,
+    )
+    if do_recall:
         memory_task = recall(user_id, user_input)
+        logger.info("recall_triggered", reason=recall_reason)
     else:
         memory_task = _empty_list()
 
@@ -103,8 +109,11 @@ async def _run_normal_preprocessing(user_input: str, user_id: str, state: dict) 
     window_task = session_mem.get_window()      # L2a sliding window
     summary_task = session_mem.get_summary()    # L2b compressed summary
 
-    intent_result, entities, memories, window, summary = await asyncio.gather(
-        intent_task, entity_task, memory_task, window_task, summary_task
+    # Load L3 user profile (sync → async wrapper)
+    profile_task = asyncio.to_thread(get_global_profile, user_id)
+
+    intent_result, entities, memories, window, summary, user_profile = await asyncio.gather(
+        intent_task, entity_task, memory_task, window_task, summary_task, profile_task
     )
 
     intent, confidence, source = intent_result
@@ -203,6 +212,7 @@ async def _run_normal_preprocessing(user_input: str, user_id: str, state: dict) 
         "search_plan": search_plan,
         "session_window": window,
         "session_summary": summary,
+        "user_profile": user_profile,
     }
 
 

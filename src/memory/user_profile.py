@@ -181,6 +181,59 @@ def get_global_profile(user_id: str) -> dict:
     }
 
 
+async def update_profile_from_preference(
+    user_id: str,
+    category: str,
+    preference_type: str,
+    text: str,
+    confidence: float,
+) -> None:
+    """Update L3 profile from a confirmed preference extracted by batch classifier.
+
+    Maps preference_type to profile fields:
+    - brand_preference → preferred_brands (append)
+    - price_sensitivity → price_sensitivity (adjust)
+    - skin_type / style_preference → store as scenario hint
+    """
+    if confidence < 0.7:
+        return
+
+    updates = {}
+
+    if preference_type == "brand_preference":
+        # Extract brand name from text (e.g. "我一直买Nike" → "Nike")
+        profile = get_profile(user_id, category)
+        brands = list(profile.get("preferred_brands", []))
+        # Simple: add the raw text as brand hint, dedup later
+        brand_hint = text[:20]
+        if brand_hint not in brands:
+            brands.append(brand_hint)
+            brands = brands[-5:]  # Keep max 5
+        updates["preferred_brands"] = brands
+
+    elif preference_type == "price_sensitivity":
+        # High sensitivity keywords → increase price_sensitivity
+        high_keywords = ["便宜", "性价比", "省钱", "预算有限", "不要太贵"]
+        low_keywords = ["品质", "不差钱", "贵点没关系", "要好的"]
+        if any(kw in text for kw in high_keywords):
+            updates["price_sensitivity"] = min(0.9, get_profile(user_id, category)["price_sensitivity"] + 0.1)
+        elif any(kw in text for kw in low_keywords):
+            updates["price_sensitivity"] = max(0.1, get_profile(user_id, category)["price_sensitivity"] - 0.1)
+
+    elif preference_type in ("skin_type", "style_preference"):
+        # Store as scenario/context hint
+        profile = get_profile(user_id, category)
+        if not profile.get("scenario"):
+            updates["scenario"] = text[:30]
+
+    if updates:
+        import asyncio
+        await asyncio.to_thread(update_profile, user_id, category, updates)
+        logger.info("profile_updated_from_preference",
+                     user_id=user_id, category=category,
+                     pref_type=preference_type, updates=list(updates.keys()))
+
+
 def format_profile_summary(profile: dict, category: str | None = None) -> str:
     """Format a profile into a human-readable summary for prompt injection."""
     parts = []
