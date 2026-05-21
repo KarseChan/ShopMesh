@@ -15,7 +15,7 @@ import asyncio
 import json
 import re
 
-from src.memory.memory_retriever import write_chunk
+from src.memory.memory_retriever import write_chunk, write_chunk_with_contradiction_awareness
 from src.memory.session_memory import get_session_memory
 from src.memory.user_profile import update_profile_from_preference
 from src.models.llm_client import get_llm
@@ -117,8 +117,8 @@ async def _batch_classify_preferences(session_id: str, user_id: str, category: s
         # Write confirmed long-term preferences to L2c + L3
         for pref in result.get("preferences", []):
             if pref.get("is_long_term") and pref.get("confidence", 0) > 0.7:
-                # L2c: vector memory
-                await write_chunk(
+                # L2c: vector memory (with contradiction detection)
+                await write_chunk_with_contradiction_awareness(
                     user_id=user_id,
                     user_input=pref["text"],
                     assistant_output="[批量偏好分析提取]",
@@ -182,8 +182,8 @@ async def node_postprocess(state: dict) -> dict:
     # ---- L2c: Two-level preference extraction ----
     category = entities.get("category", "") or ""
     if _has_strong_signal(user_input):
-        # Level 1: strong signal → write immediately, skip LLM
-        asyncio.create_task(write_chunk(
+        # Level 1: strong signal → write immediately with contradiction detection
+        asyncio.create_task(write_chunk_with_contradiction_awareness(
             user_id=user_id,
             user_input=user_input,
             assistant_output=response,

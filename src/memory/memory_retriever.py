@@ -4,9 +4,12 @@ Uses a single unified Qdrant Collection (user_long_term_memories) with
 user_id payload filtering instead of per-user collections.
 
 Chunks contain: user_input, assistant_output, entities, intent, category, timestamp, importance.
+
+Read-time decay: score × importance × e^(-λt) — no payload updates needed.
 """
 
 import hashlib
+import math
 import time
 
 from src.models.embedder import get_embedder
@@ -22,6 +25,10 @@ REFERENCE_TRIGGERS = ["上次", "那个", "之前", "之前看的", "上次那�
 
 DIMENSIONS = config.get("embedding", {}).get("default", {}).get("dimensions", 1024)
 RECALL_TOP_K = config.get("memory", {}).get("recall_top_k", 5)
+
+# Read-time decay parameters
+DECAY_LAMBDA = config.get("memory", {}).get("decay_lambda", 0.001)  # decay rate per day
+MIN_SCORE_THRESHOLD = config.get("memory", {}).get("min_score_threshold", 0.3)
 
 # Unified collection for all users (replaces per-user collections)
 MEMORY_COLLECTION = "user_long_term_memories"
@@ -104,6 +111,92 @@ async def write_chunk(
     logger.info("chunk_written", user_id=user_id, category=category)
 
 
+# === Contradiction detection ===
+
+_CONTRADICTION_KEYWORDS = ["不", "不要", "不用", "不喜欢", "不爱", "换成", "改了",
+                           "现在", "换", "放弃", "不再", "讨厌"]
+
+_CONTRADICTION_BRAND_KEYWORDS = ["品牌", "牌子"]
+
+
+def _is_contradictory(new_input: str, old_input: str, entities: dict) -> bool:
+    """Simple contradiction detection: negation words + overlapping entity references.
+
+    Returns True if new_input likely contradicts old_input.
+    """
+    has_negation = any(kw in new_input for kw in _CONTRADICTION_KEYWORDS)
+    if not has_negation:
+        return False
+
+    # Check if old input mentions the same brand/product
+    brand = entities.get("brand", "")
+    if brand and brand in old_input:
+        return True
+
+    # Check if old input mentions the same product_type
+    pt = entities.get("product_type", "")
+    if pt and pt in old_input:
+        return True
+
+    # Check for general topic overlap (e.g., both mention "Nike")
+    # Simple word overlap
+    new_words = set(new_input)
+    old_words = set(old_input)
+    overlap = len(new_words & old_words)
+    return overlap >= 2  # at least 2 shared characters (Chinese)
+
+
+async def write_chunk_with_contradiction_awareness(
+    user_id: str,
+    user_input: str,
+    assistant_output: str,
+    entities: dict | None = None,
+    intent: str | None = None,
+    category: str | None = None,
+    importance: float = 1.0,
+) -> None:
+    """Write chunk with contradiction detection.
+
+    Before writing, recalls top-3 similar memories to check for contradictions.
+    If contradiction detected, injects contrast context into the new record
+    so LLM can see the preference evolution trajectory.
+
+    Does NOT modify old records — new records naturally rank higher due to recency.
+    """
+    entities = entities or {}
+    cat = category or entities.get("category", "")
+
+    # Recall existing memories for contradiction check
+    contradiction_context = None
+    try:
+        existing = await recall(user_id, user_input, category=cat or None, top_k=3)
+        for mem in existing:
+            if _is_contradictory(user_input, mem["user_input"], entities):
+                contradiction_context = mem["user_input"][:50]
+                logger.info("memory_contradiction_detected",
+                            old=mem["user_input"][:50],
+                            new=user_input[:50],
+                            days_old=mem.get("days_old", 0))
+                break
+    except Exception:
+        pass  # recall failure should not block write
+
+    # Inject contrast context if contradiction found
+    enhanced_input = user_input
+    if contradiction_context:
+        enhanced_input = f"[偏好变更] {user_input}（之前偏好: {contradiction_context}）"
+
+    await write_chunk(
+        user_id=user_id,
+        user_input=enhanced_input,
+        assistant_output=assistant_output,
+        entities=entities,
+        intent=intent,
+        category=cat,
+        importance=importance,
+    )
+
+
 def should_recall(query: str, current_category: str | None = None,
                   prev_category: str | None = None) -> bool:
     """Detect whether the query should trigger memory recall.
@@ -170,10 +263,13 @@ async def recall(
     category: str | None = None,
     top_k: int | None = None,
 ) -> list[dict]:
-    """Recall relevant past dialog chunks via semantic search.
+    """Recall relevant past dialog chunks via semantic search with read-time decay.
 
     Uses unified collection with user_id payload filter.
-    Returns list of {"text", "score", "user_input", "assistant_output", "category", "days_old"}.
+    Applies decay formula: final_score = base_score × importance × e^(-λ × days_elapsed)
+    Over-fetches (2x) then re-ranks by decayed score to surface fresher, more important memories.
+
+    Returns list of {"text", "score", "original_score", "user_input", "assistant_output", "category", "days_old"}.
     """
     col = MEMORY_COLLECTION
     store = get_vector_store()
@@ -187,23 +283,37 @@ async def recall(
     if category:
         filters["category"] = category
 
-    results = await store.search(col, query_vector, limit=k, filters=filters)
+    # Over-fetch to compensate for decay-induced rank changes
+    results = await store.search(col, query_vector, limit=k * 2, filters=filters)
 
     now = time.time()
     memories = []
     for r in results:
         payload = r.get("payload", {})
+        base_score = r.get("score", 0)
+        importance = payload.get("importance", 1.0)
         timestamp = payload.get("timestamp", now)
+
+        # Read-time decay: score × importance × e^(-λt)
         days_elapsed = (now - timestamp) / 86400
+        decayed_score = base_score * importance * math.exp(-DECAY_LAMBDA * days_elapsed)
 
-        memories.append({
-            "text": payload.get("text", ""),
-            "score": r.get("score", 0),
-            "user_input": payload.get("user_input", ""),
-            "assistant_output": payload.get("assistant_output", ""),
-            "category": payload.get("category", ""),
-            "days_old": round(days_elapsed, 1),
-        })
+        if decayed_score >= MIN_SCORE_THRESHOLD:
+            memories.append({
+                "text": payload.get("text", ""),
+                "score": round(decayed_score, 4),
+                "original_score": round(base_score, 4),
+                "user_input": payload.get("user_input", ""),
+                "assistant_output": payload.get("assistant_output", ""),
+                "category": payload.get("category", ""),
+                "days_old": round(days_elapsed, 1),
+                "importance": importance,
+            })
 
-    logger.info("recalled", user_id=user_id, count=len(memories), query_len=len(query))
+    # Re-sort by decayed score (may differ from Qdrant's original ranking)
+    memories.sort(key=lambda x: x["score"], reverse=True)
+    memories = memories[:k]
+
+    logger.info("recalled", user_id=user_id, count=len(memories),
+                query_len=len(query), decay_applied=True)
     return memories
