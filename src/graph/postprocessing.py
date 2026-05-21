@@ -7,9 +7,11 @@ Key design: should_save_memory distinguishes long-term preference from
 temporary need to avoid polluting user profile.
 """
 
+import asyncio
 import re
 
 from src.memory.memory_retriever import write_chunk
+from src.memory.session_memory import get_session_memory
 from src.observability.logger import get_logger
 
 logger = get_logger("postprocessing")
@@ -99,10 +101,12 @@ def should_save_memory(user_input: str, entities: dict) -> bool:
 
 
 async def node_postprocess(state: dict) -> dict:
-    """Deterministic postprocessing: preference extraction + memory write.
+    """Deterministic postprocessing: session memory + preference extraction.
 
-    Runs after Agent produces final_response. Extracts preference candidate,
-    decides if it's a long-term preference, and writes to memory if so.
+    Runs after Agent produces final_response.
+    Main path: L2a add_turn (sync, Redis < 1ms).
+    Background: L2b trim (async, involves LLM compression 1~3s).
+    Background: L2c write_chunk (async, if preference detected).
 
     Returns empty dict (no state changes needed).
     """
@@ -110,23 +114,30 @@ async def node_postprocess(state: dict) -> dict:
     response = _get_final_response(state)
     entities = state.get("entities", {})
     intent_raw = state.get("intent", {})
-    # write_chunk expects a string intent
     intent = intent_raw.get("user_goal", "") if isinstance(intent_raw, dict) else str(intent_raw)
     user_id = state.get("user_id", "default_user")
+    session_id = state.get("session_id", user_id)
 
     if not user_input or not response:
         return {}
 
-    # Check if worth saving
+    # ---- L2a: Write sliding window (sync, Redis RPUSH < 1ms) ----
+    session_mem = get_session_memory(session_id)
+    await session_mem.add_turn(user_input, response)
+
+    # ---- L2b: Trim evicted turns to summary (async, LLM 1~3s) ----
+    asyncio.create_task(session_mem.trim())
+
+    # ---- L2c: Write to vector memory if preference detected (async) ----
     if should_save_memory(user_input, entities):
-        await write_chunk(
+        asyncio.create_task(write_chunk(
             user_id=user_id,
             user_input=user_input,
             assistant_output=response,
             entities=entities,
             intent=intent,
             category=entities.get("category"),
-        )
+        ))
         logger.info("memory_saved", user_id=user_id,
                      category=entities.get("category"))
     else:

@@ -14,6 +14,7 @@ from src.agents.entity_validator import validate_entities
 from src.agents.normalizer import normalize_soft_requirements
 from src.agents.search_planner import plan_search
 from src.memory.memory_retriever import recall, should_recall
+from src.memory.session_memory import get_session_memory
 from src.observability.logger import get_logger
 from src.router.intent_classifier import classify_intent
 
@@ -86,7 +87,7 @@ def _detect_task_switch(current: dict, previous: dict) -> bool:
 
 
 async def _run_normal_preprocessing(user_input: str, user_id: str, state: dict) -> dict:
-    """Path A: normal intent + entity + memory extraction (parallel)."""
+    """Path A: normal intent + entity + memory + session (parallel)."""
     intent_task = classify_intent(user_input)
     entity_task = extract_entities(user_input)
 
@@ -96,8 +97,14 @@ async def _run_normal_preprocessing(user_input: str, user_id: str, state: dict) 
     else:
         memory_task = _empty_list()
 
-    intent_result, entities, memories = await asyncio.gather(
-        intent_task, entity_task, memory_task
+    # Load L2a/L2b from Redis (parallel with intent/entity/memory)
+    session_id = state.get("session_id", user_id)
+    session_mem = get_session_memory(session_id)
+    window_task = session_mem.get_window()      # L2a sliding window
+    summary_task = session_mem.get_summary()    # L2b compressed summary
+
+    intent_result, entities, memories, window, summary = await asyncio.gather(
+        intent_task, entity_task, memory_task, window_task, summary_task
     )
 
     intent, confidence, source = intent_result
@@ -194,6 +201,8 @@ async def _run_normal_preprocessing(user_input: str, user_id: str, state: dict) 
         "entities": entities,
         "memory_chunks": memories if isinstance(memories, list) else [],
         "search_plan": search_plan,
+        "session_window": window,
+        "session_summary": summary,
     }
 
 
