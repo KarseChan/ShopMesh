@@ -37,6 +37,8 @@ _STRONG_SIGNAL_PATTERNS = [
     r"我平时", r"我习惯", r"我喜欢\w+风格",
     r"我偏好", r"我的肤质", r"我属于",
     r"我常用", r"我经常买", r"我不喜欢\w+牌",
+    r"不喜欢\w+", r"不要\w+的", r"不想\w+的",
+    r"排除\w+", r"不要\w+品牌",
     r"预算.{0,5}\d+", r"不要超过\d+", r"\d+以内",
     r"我的预算", r"我预算",
 ]
@@ -192,7 +194,8 @@ async def node_postprocess(state: dict) -> dict:
             category=category,
         ))
         # Also update L3 profile for brand/price strong signals
-        if "品牌" in user_input or "喜欢" in user_input:
+        # update_profile_from_preference handles positive vs negative internally
+        if any(kw in user_input for kw in ["品牌", "喜欢", "不喜欢", "不要", "排除", "不想"]):
             asyncio.create_task(update_profile_from_preference(
                 user_id=user_id,
                 category=category or "通用",

@@ -58,6 +58,7 @@ async def chat(request: Request):
     body = await request.json()
     message = body.get("message", "")
     session_id = body.get("session_id", str(uuid.uuid4()))
+    user_id = body.get("user_id", session_id)  # fallback for backward compat
     mode = body.get("mode", "multi_agent")
 
     # Input validation
@@ -73,17 +74,17 @@ async def chat(request: Request):
     async def event_stream():
         try:
             if mode == "workflow":
-                async for event in run_shopping_stream(message, session_id=session_id):
+                async for event in run_shopping_stream(message, session_id=session_id, user_id=user_id):
                     etype = event.get("event", "unknown")
                     data = event.get("data", {})
                     yield _sse_event(etype, data)
             elif mode == "multi_agent":
-                async for event in run_multi_agent_stream(message, user_id=session_id, thread_id=f"multi-{session_id}"):
+                async for event in run_multi_agent_stream(message, user_id=user_id, session_id=session_id, thread_id=f"multi-{session_id}"):
                     etype = event.get("event", "unknown")
                     data = event.get("data", {})
                     yield _sse_event(etype, data)
             else:
-                async for event in run_agent_stream(message, user_id=session_id, thread_id=f"agent-{session_id}"):
+                async for event in run_agent_stream(message, user_id=user_id, session_id=session_id, thread_id=f"agent-{session_id}"):
                     etype = event.get("event", "unknown")
                     data = event.get("data", {})
                     yield _sse_event(etype, data)
@@ -102,6 +103,7 @@ async def chat_order(request: Request):
     """
     body = await request.json()
     session_id = body.get("session_id", str(uuid.uuid4()))
+    user_id = body.get("user_id", session_id)
     product = body.get("product", {})
 
     # Build initial state with the product as ranked_results
@@ -109,6 +111,8 @@ async def chat_order(request: Request):
         "messages": [],
         "tool_calls": [],
         "errors": [],
+        "user_id": user_id,
+        "session_id": session_id,
         "intent": "order",
         "entities": {},
         "memory_chunks": [],
@@ -152,6 +156,7 @@ async def chat_resume(request: Request):
     """
     body = await request.json()
     session_id = body.get("session_id", "")
+    user_id = body.get("user_id", session_id)
     confirmed = body.get("confirmed", False)
 
     async def resume_stream():
@@ -200,7 +205,7 @@ async def report_behavior(request: Request):
     """
     body = await request.json()
     signal = BehaviorSignal(
-        user_id=body.get("session_id", "default_user"),
+        user_id=body.get("user_id", body.get("session_id", "default_user")),
         category=body.get("category", ""),
         action=body["action"],
         product_price=body.get("product_price"),

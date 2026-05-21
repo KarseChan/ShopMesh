@@ -79,6 +79,7 @@ def get_profile(user_id: str, category: str) -> dict:
                 result = {
                     "price_sensitivity": profile.price_sensitivity,
                     "preferred_brands": json.loads(profile.preferred_brands) if profile.preferred_brands else [],
+                    "excluded_brands": json.loads(getattr(profile, 'excluded_brands', None) or '[]') if hasattr(profile, 'excluded_brands') and profile.excluded_brands else [],
                     "visit_count": profile.visit_count,
                     "scenario": None,
                     "price_range": None,
@@ -92,6 +93,7 @@ def get_profile(user_id: str, category: str) -> dict:
     default = {
         "price_sensitivity": 0.5,
         "preferred_brands": [],
+        "excluded_brands": [],
         "visit_count": 0,
         "scenario": None,
         "price_range": None,
@@ -167,16 +169,19 @@ def get_global_profile(user_id: str) -> dict:
         return {"price_sensitivity": 0.5, "preferred_brands": [], "total_visits": 0}
 
     all_brands = set()
+    all_excluded = set()
     total_visits = 0
     sensitivities = []
     for p in user_profiles.values():
         sensitivities.append(p["price_sensitivity"])
         all_brands.update(p["preferred_brands"])
+        all_excluded.update(p.get("excluded_brands", []))
         total_visits += p["visit_count"]
 
     return {
         "price_sensitivity": sum(sensitivities) / len(sensitivities),
         "preferred_brands": list(all_brands),
+        "excluded_brands": list(all_excluded),
         "total_visits": total_visits,
     }
 
@@ -201,15 +206,31 @@ async def update_profile_from_preference(
     updates = {}
 
     if preference_type == "brand_preference":
-        # Extract brand name from text (e.g. "我一直买Nike" → "Nike")
+        # Detect negative vs positive brand preference
+        negative_keywords = ["不喜欢", "不要", "排除", "不想", "讨厌", "不买", "不选"]
+        is_negative = any(kw in text for kw in negative_keywords)
+
+        # Extract brand name: strip negative keywords to get the brand
+        brand_hint = text
+        for kw in negative_keywords:
+            brand_hint = brand_hint.replace(kw, "")
+        brand_hint = brand_hint.strip()[:20]
+        if not brand_hint:
+            brand_hint = text[:20]
+
         profile = get_profile(user_id, category)
-        brands = list(profile.get("preferred_brands", []))
-        # Simple: add the raw text as brand hint, dedup later
-        brand_hint = text[:20]
-        if brand_hint not in brands:
-            brands.append(brand_hint)
-            brands = brands[-5:]  # Keep max 5
-        updates["preferred_brands"] = brands
+        if is_negative:
+            excluded = list(profile.get("excluded_brands", []))
+            if brand_hint and brand_hint not in excluded:
+                excluded.append(brand_hint)
+                excluded = excluded[-10:]  # Keep max 10
+            updates["excluded_brands"] = excluded
+        else:
+            brands = list(profile.get("preferred_brands", []))
+            if brand_hint not in brands:
+                brands.append(brand_hint)
+                brands = brands[-5:]  # Keep max 5
+            updates["preferred_brands"] = brands
 
     elif preference_type == "price_sensitivity":
         # High sensitivity keywords → increase price_sensitivity
@@ -239,6 +260,8 @@ def format_profile_summary(profile: dict, category: str | None = None) -> str:
     parts = []
     if profile.get("preferred_brands"):
         parts.append(f"偏好品牌: {', '.join(profile['preferred_brands'][:3])}")
+    if profile.get("excluded_brands"):
+        parts.append(f"排除品牌: {', '.join(profile['excluded_brands'][:5])}")
     sensitivity = profile.get("price_sensitivity")
     if sensitivity is not None and sensitivity != 0.5:
         level = "高" if sensitivity > 0.7 else "低"

@@ -123,6 +123,8 @@ def _format_user_profile(profile: dict) -> str:
     parts = []
     if profile.get("preferred_brands"):
         parts.append(f"偏好品牌: {', '.join(profile['preferred_brands'][:3])}")
+    if profile.get("excluded_brands"):
+        parts.append(f"排除品牌: {', '.join(profile['excluded_brands'][:5])}")
     sensitivity = profile.get("price_sensitivity")
     if sensitivity is not None and sensitivity != 0.5:
         level = "高" if sensitivity > 0.7 else "低"

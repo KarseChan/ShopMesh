@@ -27,6 +27,9 @@ class ShoppingState(TypedDict):
     - Read-write fields: shared counters / flags
     """
 
+    # === Identity ===
+    user_id: str                             # Persistent user identity
+
     # === Reducer fields (parallel-safe append) ===
     messages: Annotated[list, add_messages]  # Dialog history, pruned with RemoveMessage
     tool_calls: Annotated[list, _add_lists]  # Tool call records (this turn)

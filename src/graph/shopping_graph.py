@@ -159,7 +159,8 @@ async def node_recall_memory(state: ShoppingState) -> dict:
     current_cat = None  # Not yet extracted
 
     if should_recall(user_input, current_cat, prev_cat):
-        memories = await recall("default_user", user_input)
+        user_id = state.get("user_id", "default_user")
+        memories = await recall(user_id, user_input)
         return {"memory_chunks": memories}
 
     return {"memory_chunks": []}
@@ -305,9 +306,10 @@ async def node_explain(state: ShoppingState) -> dict:
 
     # Write to memory (async, fire-and-forget)
     user_input = _get_user_input(state)
+    user_id = state.get("user_id", "default_user")
     category = state.get("entities", {}).get("category")
     asyncio.create_task(write_chunk(
-        "default_user", user_input, explanation,
+        user_id, user_input, explanation,
         entities=state.get("entities"), intent=state.get("intent"), category=category,
     ))
 
@@ -370,7 +372,7 @@ def build_shopping_graph():
     return graph.compile(checkpointer=checkpointer)
 
 
-async def run_shopping(user_input: str, session_id: str = "default") -> dict:
+async def run_shopping(user_input: str, session_id: str = "default", user_id: str = "default_user") -> dict:
     """Run the shopping graph for a single user input.
 
     Returns the final state with explanation and ranked results.
@@ -383,6 +385,7 @@ async def run_shopping(user_input: str, session_id: str = "default") -> dict:
     # so entities, asked_fields, clarification_count persist across turns.
     initial_state = {
         "messages": [{"role": "user", "content": user_input}],
+        "user_id": user_id,
     }
 
     result = await app.ainvoke(initial_state, config={"configurable": {"thread_id": session_id}})
@@ -407,7 +410,7 @@ async def run_shopping(user_input: str, session_id: str = "default") -> dict:
     return result
 
 
-async def run_shopping_stream(user_input: str, session_id: str = "default") -> AsyncGenerator[dict, None]:
+async def run_shopping_stream(user_input: str, session_id: str = "default", user_id: str = "default_user") -> AsyncGenerator[dict, None]:
     """Run the shopping graph with SSE streaming output.
 
     Yields events:
@@ -426,6 +429,7 @@ async def run_shopping_stream(user_input: str, session_id: str = "default") -> A
     # so entities, asked_fields, clarification_count persist across turns.
     initial_state = {
         "messages": [{"role": "user", "content": user_input}],
+        "user_id": user_id,
     }
 
     async for event in app.astream(initial_state, config={"configurable": {"thread_id": session_id}}):

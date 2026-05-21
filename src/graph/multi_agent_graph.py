@@ -120,6 +120,7 @@ def build_multi_agent_graph():
 async def run_multi_agent_stream(
     user_input: str,
     user_id: str = "default_user",
+    session_id: str | None = None,
     thread_id: str | None = None,
     messages: list | None = None,
 ) -> AsyncGenerator[dict, None]:
@@ -128,7 +129,7 @@ async def run_multi_agent_stream(
     Same signature and event format as run_agent_stream() in shopping_agent.py.
     """
     request_id = generate_request_id()
-    set_request_context(request_id=request_id, session_id=user_id)
+    set_request_context(request_id=request_id, session_id=session_id or user_id)
 
     graph = build_multi_agent_graph()
     tid = thread_id or f"multi_{user_id}_{uuid.uuid4().hex[:8]}"
@@ -139,6 +140,7 @@ async def run_multi_agent_stream(
     initial_state = {
         "messages": initial_messages,
         "user_id": user_id,
+        "session_id": session_id or tid,
         "intent": {},
         # entities: 不覆盖，让 checkpointer 保留前一轮值，实现 follow-up 上下文继承
         "memory_chunks": [],

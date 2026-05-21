@@ -71,6 +71,13 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
   const [isLoading, setIsLoading] = useState(false);
   const [pendingOrder, setPendingOrder] = useState<Record<string, unknown> | null>(null);
   const sessionIdRef = useRef(sessionId || crypto.randomUUID());
+  const userIdRef = useRef(
+    localStorage.getItem("shopping_user_id") || (() => {
+      const id = crypto.randomUUID();
+      localStorage.setItem("shopping_user_id", id);
+      return id;
+    })()
+  );
 
   const sendMessage = useCallback(async (text: string, displayText?: string) => {
     if (!text.trim() || isLoading) return;
@@ -91,6 +98,7 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
         body: JSON.stringify({
           message: text,
           session_id: sessionIdRef.current,
+          user_id: userIdRef.current,
         }),
       });
 
@@ -202,6 +210,7 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           session_id: sessionIdRef.current,
+          user_id: userIdRef.current,
           product: {
             product_id: (product as unknown as Record<string, unknown>).product_id || product.name,
             name: product.name,
@@ -257,6 +266,7 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           session_id: sessionIdRef.current,
+          user_id: userIdRef.current,
           confirmed,
         }),
       });
@@ -309,6 +319,7 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         session_id: sessionIdRef.current,
+        user_id: userIdRef.current,
         action,
         category: product.category || "",
         product_price: product.final_price || product.price,

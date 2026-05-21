@@ -10,6 +10,7 @@ from src.agents.react_prompt import (
     _format_memory,
     _format_search_plan,
     _format_tool_descriptions,
+    _format_user_profile,
 )
 from src.tools.registry import get_tools_by_names
 
@@ -19,6 +20,7 @@ _SYSTEM_TEMPLATE = """你是一个搜索助手 Agent。你的目标是帮用户�
 
 用户意图：{intent}（置信度 {confidence}）
 提取的实体：{entities}
+用户画像：{user_profile}
 用户历史记忆：{memory_summary}
 检索计划：{search_plan}
 
@@ -73,6 +75,7 @@ def build_system_prompt(state: dict, tool_names: list[str]) -> str:
     entities = state.get("entities", {})
     memory_chunks = state.get("memory_chunks", [])
     search_plan = state.get("search_plan", {})
+    user_profile = state.get("user_profile", {})
 
     tools = get_tools_by_names(tool_names)
 
@@ -80,6 +83,7 @@ def build_system_prompt(state: dict, tool_names: list[str]) -> str:
         intent=_format_intent(intent),
         confidence=f"{confidence:.2f}",
         entities=_format_entities(entities),
+        user_profile=_format_user_profile(user_profile),
         memory_summary=_format_memory(memory_chunks),
         search_plan=_format_search_plan(search_plan),
         tool_descriptions=_format_tool_descriptions(tools),
