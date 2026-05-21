@@ -6,6 +6,7 @@ interface ProductCardProps {
   product: Product;
   rank?: number;
   onOrder?: (product: Product) => void;
+  onProductClick?: (product: Product) => void;
 }
 
 const PLATFORM_NAMES: Record<string, string> = {
@@ -14,13 +15,16 @@ const PLATFORM_NAMES: Record<string, string> = {
   pdd: "拼多多",
 };
 
-export default function ProductCard({ product, rank, onOrder }: ProductCardProps) {
+export default function ProductCard({ product, rank, onOrder, onProductClick }: ProductCardProps) {
   const displayPrice = product.final_price || product.price;
   const hasDiscount = product.final_price && product.final_price < product.price;
   const platformName = product.platform_id ? PLATFORM_NAMES[product.platform_id] || product.platform_id : "";
 
   return (
-    <div className="border rounded-xl p-4 bg-white shadow-sm hover:shadow-md transition-shadow">
+    <div
+      className="border rounded-xl p-4 bg-white shadow-sm hover:shadow-md transition-shadow cursor-pointer"
+      onClick={() => onProductClick?.(product)}
+    >
       <div className="flex items-center gap-2 mb-2">
         {rank && (
           <span className="inline-block bg-blue-100 text-blue-700 text-xs font-semibold px-2 py-1 rounded-full">

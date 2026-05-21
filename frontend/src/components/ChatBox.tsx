@@ -7,7 +7,7 @@ import ComparisonTable, { type ComparisonData } from "./ComparisonTable";
 import OrderConfirm from "./OrderConfirm";
 
 export default function ChatBox() {
-  const { messages, isLoading, sendMessage, startOrder, resumeOrder, pendingOrder } = useChatStream();
+  const { messages, isLoading, sendMessage, startOrder, resumeOrder, reportBehavior, pendingOrder } = useChatStream();
   const [input, setInput] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -41,7 +41,7 @@ export default function ChatBox() {
         )}
 
         {messages.map((msg, i) => (
-          <MessageBubble key={i} message={msg} onOrder={startOrder} onOptionClick={sendMessage} />
+          <MessageBubble key={i} message={msg} onOrder={startOrder} onProductClick={reportBehavior} onOptionClick={sendMessage} />
         ))}
 
         {isLoading && messages[messages.length - 1]?.role !== "assistant" && (
@@ -90,7 +90,7 @@ export default function ChatBox() {
   );
 }
 
-function MessageBubble({ message, onOrder, onOptionClick }: { message: ChatMessage; onOrder?: (product: Product) => void; onOptionClick?: (text: string, displayText?: string) => void }) {
+function MessageBubble({ message, onOrder, onProductClick, onOptionClick }: { message: ChatMessage; onOrder?: (product: Product) => void; onProductClick?: (action: string, product: Product) => void; onOptionClick?: (text: string, displayText?: string) => void }) {
   if (message.role === "user") {
     return (
       <div className="flex justify-end">
@@ -137,7 +137,7 @@ function MessageBubble({ message, onOrder, onOptionClick }: { message: ChatMessa
                       <div className="bg-gray-100 px-4 py-3 rounded-2xl rounded-bl-sm text-sm leading-relaxed">
                         {rec.text}
                       </div>
-                      <ProductCard product={product} rank={i + 1} onOrder={onOrder} />
+                      <ProductCard product={product} rank={i + 1} onOrder={onOrder} onProductClick={() => onProductClick?.("click", product)} />
                     </div>
                   );
                 })}
@@ -159,7 +159,7 @@ function MessageBubble({ message, onOrder, onOptionClick }: { message: ChatMessa
                 {message.products && message.products.length > 0 && (
                   <div className="grid gap-2">
                     {message.products.map((product, i) => (
-                      <ProductCard key={i} product={product} rank={i + 1} onOrder={onOrder} />
+                      <ProductCard key={i} product={product} rank={i + 1} onOrder={onOrder} onProductClick={() => onProductClick?.("click", product)} />
                     ))}
                   </div>
                 )}

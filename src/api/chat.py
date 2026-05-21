@@ -28,6 +28,7 @@ from src.graph.hitl_nodes import build_hitl_order_graph
 from src.graph.shopping_agent import run_agent_stream
 from src.graph.shopping_graph import run_shopping_stream
 from src.graph.multi_agent_graph import run_multi_agent_stream
+from src.memory.behavior_tracker import BehaviorSignal, process_signal
 from src.security.input_guard import InputViolation, validate_input
 
 app = FastAPI(title="ShoppingAgent API")
@@ -180,4 +181,32 @@ async def chat_resume(request: Request):
 
 @app.get("/api/health")
 async def health():
+    return {"status": "ok"}
+
+
+@app.post("/api/behavior")
+async def report_behavior(request: Request):
+    """Report a user behavior signal (click/select/reject/dwell).
+
+    Request body: {
+        "session_id": str,
+        "action": "click" | "select" | "reject" | "dwell",
+        "category": str?,
+        "product_price": float?,
+        "product_brand": str?,
+        "product_id": str?,
+        "duration_ms": int?
+    }
+    """
+    body = await request.json()
+    signal = BehaviorSignal(
+        user_id=body.get("session_id", "default_user"),
+        category=body.get("category", ""),
+        action=body["action"],
+        product_price=body.get("product_price"),
+        product_brand=body.get("product_brand"),
+        product_id=body.get("product_id"),
+        duration_ms=body.get("duration_ms"),
+    )
+    await process_signal(signal)
     return {"status": "ok"}

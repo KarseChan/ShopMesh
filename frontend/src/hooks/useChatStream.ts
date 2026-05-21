@@ -60,6 +60,7 @@ export interface UseChatStreamReturn {
   sendMessage: (text: string, displayText?: string) => Promise<void>;
   startOrder: (product: Product) => Promise<void>;
   resumeOrder: (confirmed: boolean) => Promise<void>;
+  reportBehavior: (action: string, product: Product) => void;
   pendingOrder: Record<string, unknown> | null;
 }
 
@@ -301,7 +302,23 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
     }
   }, []);
 
-  return { messages, isLoading, sendMessage, startOrder, resumeOrder, pendingOrder };
+  const reportBehavior = useCallback((action: string, product: Product) => {
+    // Fire-and-forget: non-blocking POST to behavior endpoint
+    fetch(`${API_BASE}/api/behavior`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: sessionIdRef.current,
+        action,
+        category: product.category || "",
+        product_price: product.final_price || product.price,
+        product_brand: product.brand || "",
+        product_id: product.product_id || "",
+      }),
+    }).catch(() => {}); // silently ignore failures
+  }, []);
+
+  return { messages, isLoading, sendMessage, startOrder, resumeOrder, reportBehavior, pendingOrder };
 }
 
 function handleSSEEvent(
