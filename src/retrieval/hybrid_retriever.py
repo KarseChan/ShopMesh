@@ -61,7 +61,7 @@ async def hybrid_search(
     query_vector = await embedder.aembed(query)
 
     # Build payload filter from entities
-    qdrant_filter = build_filter(entities)
+    qdrant_filter = await build_filter(entities)
     simple_filters = _filter_to_dict(entities)
 
     # Log the filter being applied (with product_type + gender + price details)
@@ -70,7 +70,7 @@ async def hybrid_search(
     gender = entities.get("gender")
     price_min = entities.get("price_min")
     price_max = entities.get("price_max")
-    normalized_categories = _expand_category(category, product_type, gender) if (category or product_type) else []
+    normalized_categories = await _expand_category(category, product_type, gender) if (category or product_type) else []
     logger.info("filter_built",
                 simple_filters=simple_filters,
                 has_complex_filter=qdrant_filter is not None,

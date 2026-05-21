@@ -18,7 +18,7 @@ from src.tools.registry import get_all_tool_schemas
 logger = get_logger("react_node")
 
 # Fields that the Agent may omit but are needed for ranking
-_INJECTABLE_FIELDS = ("soft_requirements", "hard_constraints", "gender")
+_INJECTABLE_FIELDS = ("soft_requirements", "hard_constraints", "gender", "brand")
 
 
 def _inject_entity_fields(agent_entities: dict, preprocessed_entities: dict) -> None:

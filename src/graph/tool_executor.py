@@ -13,7 +13,7 @@ _TOOL_ARGS_LOG_FIELDS = {
     "price_compare": ["product_ids"],
     "review_summary": ["product_ids", "aspects"],
     "constraint_relaxation": ["failed_reason"],
-    "ask_clarification": ["asked_fields"],
+    "ask_clarification": ["asked_fields", "search_failed"],
 }
 
 # Fields to extract from result for logging

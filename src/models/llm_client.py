@@ -20,6 +20,11 @@ _BASE_DELAY = 1.0  # seconds
 class LLMClient:
     """Thin wrapper around OpenAI-compatible chat completions API."""
 
+    # Separate connect vs read timeouts: fail fast on unreachable servers,
+    # but allow LLM time to generate responses.
+    _CONNECT_TIMEOUT = 5.0    # seconds — server must accept connection within this
+    _READ_TIMEOUT = 120.0     # seconds — LLM can take a while to respond
+
     def __init__(self, model: str, base_url: str, api_key: str = "",
                  temperature: float = 0.1, max_tokens: int = 2048):
         self.model = model
@@ -48,10 +53,17 @@ class LLMClient:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
 
+        timeout = httpx.Timeout(
+            connect=self._CONNECT_TIMEOUT,
+            read=self._READ_TIMEOUT,
+            write=10.0,
+            pool=5.0,
+        )
+
         last_error = None
         for attempt in range(_MAX_RETRIES):
             try:
-                async with httpx.AsyncClient(timeout=60) as client:
+                async with httpx.AsyncClient(timeout=timeout) as client:
                     resp = await client.post(url, json=payload, headers=headers)
                     resp.raise_for_status()
                     data = resp.json()

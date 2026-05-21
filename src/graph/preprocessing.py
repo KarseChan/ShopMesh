@@ -124,18 +124,18 @@ async def _run_normal_preprocessing(user_input: str, user_id: str, state: dict) 
 
     if prev_entities:
         if task_switched:
-            # Task switch: only inherit structural fields, skip task-specific ones
-            _STRUCTURAL_FIELDS = ("category", "product_type", "brand")
-            _TASK_SPECIFIC_FIELDS = ("scenario", "price_min", "price_max", "soft_requirements")
-            for field in _STRUCTURAL_FIELDS:
+            # Task switch: clear ALL previous context, only use current turn's entities.
+            # Do NOT inherit category/product_type/brand — they belong to the old task.
+            _ALL_CONTEXT_FIELDS = ("category", "product_type", "brand",
+                                   "scenario", "price_min", "price_max",
+                                   "soft_requirements", "hard_constraints")
+            cleared = [f for f in _ALL_CONTEXT_FIELDS if prev_entities.get(f)]
+            for field in _ALL_CONTEXT_FIELDS:
                 if not entities.get(field) and prev_entities.get(field):
-                    entities[field] = prev_entities[field]
-                    logger.info("context_inherited_structural", field=field,
-                                value=str(prev_entities[field])[:50])
-            skipped = [f for f in _TASK_SPECIFIC_FIELDS if prev_entities.get(f)]
-            if skipped:
-                logger.info("context_inheritance_skipped", reason="task_switch",
-                            skipped_fields=skipped)
+                    entities[field] = None if not isinstance(prev_entities.get(field), list) else []
+            if cleared:
+                logger.info("context_inheritance_cleared", reason="task_switch",
+                            cleared_fields=cleared)
         else:
             # Same task continuation: inherit all missing fields
             for field in ("category", "product_type", "brand", "scenario", "price_min", "price_max"):

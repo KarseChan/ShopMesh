@@ -193,7 +193,12 @@ async def run_multi_agent_stream(
         # Extract search results from tool_calls_log
         search_results = state_values.get("search_results", [])
         tool_log = state_values.get("tool_calls_log", [])
-        if not search_results:
+        used_fallback = state_values.get("used_fallback", False)
+        # Only extract from tool_calls_log when fallback was NOT used.
+        # tool_calls_log is a reducer that accumulates across turns, so when
+        # fallback fires (agent failed), the log contains stale entries from
+        # previous turns that should not be emitted as current results.
+        if not search_results and not used_fallback:
             seen_ids = set()
             for entry in tool_log:
                 if entry.get("tool") in ("product_search", "multi_query_search"):
@@ -228,11 +233,12 @@ async def run_multi_agent_stream(
             or response_data.get("products", [])
         )
 
-        # Results event: emit when there are actual search results to display.
+        # Results event: emit when there are actual search results AND recommendations.
         # For detail_card, search_results is the single product being detailed.
         # For product_grid / recommendation_cards, search_results are the matched products.
         # If agent only asked clarification (no search), search_results stays empty.
-        if search_results:
+        # If fallback returned "no results", recommendations is empty → don't emit zombie cards.
+        if search_results and recommendations:
             # Collect product_ids referenced in recommendations
             rec_ids = {r.get("product_id", "") for r in recommendations if r.get("product_id")}
             # Ensure all recommended products are in the products list

@@ -1399,3 +1399,136 @@ if search_results and recommendations:
 | `src/graph/shopping_agent.py` | 同上 |
 
 **状态**: 已修复
+
+---
+
+## P30: 多轮对话状态污染 — Task Switch 结构性继承 + ask_clarification 死锁 + 僵尸 product_ids
+
+**发现时间**: 2026-05-21
+
+**现象**: 三轮对话后系统崩溃：
+
+1. 第一轮"新秀丽/预算700"→ 正常返回 prod_055
+2. 第二轮"国家地理/大容量/排除小米"→ 继承了第一轮的 brand 和 price_max，但 Agent 自我纠偏成功
+3. 第三轮"先不看包了，看300元送礼好物"→ 崩盘：
+   - Preprocessing 把 category="箱包"、product_type="包"、brand="国家地理" 继承过来
+   - Agent 搜索"国家地理 300元送礼"→ 0 结果
+   - Agent 调 ask_clarification → 返回 should_ask=false（死锁）
+   - Fallback 触发 → 文字说"抱歉没找到"，但前端推了前两轮的包卡片
+
+**根因**: 三层问题叠加。
+
+### 崩溃点 A: Task Switch 结构性继承未清空
+
+`preprocessing.py` 的 `_detect_task_switch` 正确检测到了 scenario 变化（"通勤"→"生日送礼"），但在继承逻辑中，task_switch 分支仍然把 category/product_type/brand 作为"结构性字段"继承：
+
+```python
+# 旧代码
+if task_switched:
+    _STRUCTURAL_FIELDS = ("category", "product_type", "brand")  # ← 这些也被继承了
+    for field in _STRUCTURAL_FIELDS:
+        if not entities.get(field) and prev_entities.get(field):
+            entities[field] = prev_entities[field]  # ← 灾难：品牌="国家地理"被带入送礼场景
+```
+
+导致第三轮的底层硬约束变成了：`brand="国家地理" + price_max=300 + category="箱包"`。
+
+### 崩溃点 B: ask_clarification 死锁
+
+Agent 搜索 0 结果后调用 `ask_clarification`，但函数内部逻辑：
+
+1. `missing_critical_fields=[]`（没有缺失字段）→ 走到 "No missing fields" 分支
+2. 返回 `should_ask=False, strategy="none"` → Agent 无路可走
+3. Agent 再次搜索 → 0 结果 → 再调 ask_clarification → 还是 false
+4. 触发 `agent_loop_detected` → fallback
+
+`ask_clarification` 没有"搜索失败"的处理分支，当搜索结果为 0 且约束冲突时，无法引导用户调整方向。
+
+### 崩溃点 C: 僵尸 product_ids 渲染
+
+`multi_agent_graph.py` 从 `tool_calls_log`（reducer，跨轮累积）中提取 search_results。当 fallback 返回空结果时：
+
+1. `search_results=[]` → 进入 tool_calls_log 提取分支
+2. tool_calls_log 包含前两轮的 product_search 记录
+3. 提取出 prod_055、prod_056 → 作为当前轮的 search_results
+4. `if search_results:` 判断为 True → 发送 results 事件
+5. 前端渲染出"嘴上说没找到，身体却推了包"的诡异现象
+
+**解决方案**: 三层修复。
+
+### 1. preprocessing.py — Task Switch 彻底清空上下文
+
+当 `_detect_task_switch` 返回 True 时，不继承任何字段（包括 category/product_type/brand），只使用当前轮 entity_extractor 提取的结果：
+
+```python
+if task_switched:
+    _ALL_CONTEXT_FIELDS = ("category", "product_type", "brand",
+                           "scenario", "price_min", "price_max",
+                           "soft_requirements", "hard_constraints")
+    for field in _ALL_CONTEXT_FIELDS:
+        if not entities.get(field) and prev_entities.get(field):
+            entities[field] = None if not isinstance(prev_entities.get(field), list) else []
+    logger.info("context_inheritance_cleared", reason="task_switch", cleared_fields=...)
+```
+
+### 2. agent_tools.py — ask_clarification 新增 search_failed 参数
+
+当 Agent 搜索 0 结果时，传入 `search_failed=true`，函数强制返回 `should_ask=true` 并生成引导用户放宽条件的追问：
+
+```python
+async def ask_clarification(entities, asked_fields, search_failed=False):
+    if search_failed:
+        return {"should_ask": True, "strategy": "ask",
+                "reason": "搜索无结果，需要用户放宽条件",
+                "question_type": "search_failed_relax", ...}
+```
+
+react_prompt.py 新增决策规则：`product_search 返回 0 且 constraint_relaxation 已无效 → 调用 ask_clarification(search_failed=true)`
+
+### 3. multi_agent_graph.py + shopping_agent.py — 清理僵尸 product_ids
+
+两处修改：
+
+a) tool_calls_log 提取增加 `used_fallback` 检查 — 当 fallback 触发时，不从跨轮累积的 tool_calls_log 中提取旧数据：
+```python
+if not search_results and not used_fallback:  # 新增 and not used_fallback
+    for entry in tool_log: ...
+```
+
+b) results 事件发送增加 `and recommendations` 检查（multi_agent_graph.py 对齐 shopping_agent.py）：
+```python
+if search_results and recommendations:  # 原来只有 if search_results:
+```
+
+**修改文件**:
+
+| 文件 | 改动 |
+|------|------|
+| `src/graph/preprocessing.py` | task_switch 时清空所有上下文字段，不再继承 category/product_type/brand |
+| `src/tools/agent_tools.py` | `ask_clarification` 新增 `search_failed` 参数，搜索失败时强制追问 |
+| `src/agents/react_prompt.py` | 新增决策规则：搜索失败且约束放宽无效时调用 `ask_clarification(search_failed=true)` |
+| `src/graph/tool_executor.py` | `ask_clarification` 日志新增 `search_failed` 字段 |
+| `src/graph/multi_agent_graph.py` | tool_calls_log 提取增加 `used_fallback` 检查 + results 发射增加 `and recommendations` |
+| `src/graph/shopping_agent.py` | tool_calls_log 提取增加 `used_fallback` 检查 |
+
+**修复后预期流程**:
+
+```
+第一轮: "新秀丽/通勤/预算700"
+  → entities: {brand: "新秀丽", price_max: 700, scenario: "通勤"}
+  → product_search → prod_055 ✓
+
+第二轮: "国家地理/大容量/排除小米"
+  → task_switch? No (scenario 未变) → 继承 brand
+  → Agent 自我纠偏 → prod_056 ✓
+
+第三轮: "先不看包了，看300元送礼好物"
+  → task_switch! (scenario: "通勤"→"生日送礼")
+  → 清空 category/product_type/brand/scenario/price_max
+  → entities: {scenario: "生日送礼", price_max: 300}（仅当前轮提取）
+  → product_search → 无国家地理硬过滤 → 找到送礼商品 ✓
+  → 如果仍 0 结果 → ask_clarification(search_failed=true) → should_ask=true → 追问用户
+  → 不再渲染前两轮的僵尸商品卡片
+```
+
+**状态**: 已修复

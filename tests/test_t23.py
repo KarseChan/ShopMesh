@@ -7,16 +7,18 @@ from src.retrieval.filter_builder import build_filter, build_filter_from_keyword
 
 # === Filter Builder Tests ===
 
-def test_build_filter_category():
+@pytest.mark.asyncio
+async def test_build_filter_category():
     entities = {"category": "护肤"}
-    f = build_filter(entities)
+    f = await build_filter(entities)
     assert f is not None
     assert len(f.must) == 1
 
 
-def test_build_filter_price_range():
+@pytest.mark.asyncio
+async def test_build_filter_price_range():
     entities = {"price_max": 100}
-    f = build_filter(entities)
+    f = await build_filter(entities)
     assert f is not None
     assert len(f.must) == 1
     # Check it's a range condition
@@ -24,23 +26,26 @@ def test_build_filter_price_range():
     assert cond.key == "price"
 
 
-def test_build_filter_combined():
+@pytest.mark.asyncio
+async def test_build_filter_combined():
     entities = {"category": "奶茶", "price_max": 20}
-    f = build_filter(entities)
+    f = await build_filter(entities)
     assert f is not None
     assert len(f.must) == 2
 
 
-def test_build_filter_brand():
+@pytest.mark.asyncio
+async def test_build_filter_brand():
     entities = {"brand": "Apple"}
-    f = build_filter(entities)
+    f = await build_filter(entities)
     assert f is not None
     assert len(f.must) == 1
 
 
-def test_build_filter_price_min_max():
+@pytest.mark.asyncio
+async def test_build_filter_price_min_max():
     entities = {"price_min": 100, "price_max": 500}
-    f = build_filter(entities)
+    f = await build_filter(entities)
     assert f is not None
     cond = f.must[0]
     assert cond.key == "price"
@@ -48,26 +53,30 @@ def test_build_filter_price_min_max():
     assert cond.range.lte == 500.0
 
 
-def test_build_filter_no_conditions():
+@pytest.mark.asyncio
+async def test_build_filter_no_conditions():
     entities = {"scenario": "自用"}  # scenario is not filterable
-    f = build_filter(entities)
+    f = await build_filter(entities)
     assert f is None
 
 
-def test_build_filter_empty():
-    assert build_filter({}) is None
+@pytest.mark.asyncio
+async def test_build_filter_empty():
+    assert await build_filter({}) is None
 
 
-def test_build_filter_platform():
+@pytest.mark.asyncio
+async def test_build_filter_platform():
     entities = {"platform_id": "jd"}
-    f = build_filter(entities)
+    f = await build_filter(entities)
     assert f is not None
     assert f.must[0].key == "platform_id"
 
 
-def test_build_filter_multiple_categories():
+@pytest.mark.asyncio
+async def test_build_filter_multiple_categories():
     entities = {"categories": ["护肤", "数码"]}
-    f = build_filter(entities)
+    f = await build_filter(entities)
     assert f is not None
 
 

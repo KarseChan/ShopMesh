@@ -23,7 +23,7 @@ from src.observability.logger import get_logger
 logger = get_logger("specialized_agents")
 
 # Fields that the Agent may omit but are needed for ranking
-_INJECTABLE_FIELDS = ("soft_requirements", "hard_constraints", "gender")
+_INJECTABLE_FIELDS = ("soft_requirements", "hard_constraints", "gender", "brand")
 
 
 # ──────────────────────────────────────────────

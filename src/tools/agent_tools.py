@@ -66,7 +66,7 @@ async def constraint_relaxation(entities: dict, failed_reason: str) -> dict:
     }
 
 
-async def ask_clarification(entities: dict, asked_fields: list[str]) -> dict:
+async def ask_clarification(entities: dict, asked_fields: list[str], search_failed: bool = False) -> dict:
     """Decide whether to ask clarifying questions with structured spec.
 
     Strategy table:
@@ -104,6 +104,34 @@ async def ask_clarification(entities: dict, asked_fields: list[str]) -> dict:
     round_num = len(asked_fields)
 
     # --- Strategy decision ---
+
+    # Search failed (0 results) with active constraints → force ask to resolve conflict
+    if search_failed:
+        active_constraints = []
+        if brand:
+            active_constraints.append(f"品牌={brand}")
+        if category:
+            active_constraints.append(f"品类={category}")
+        if product_type:
+            active_constraints.append(f"类型={product_type}")
+        if entities.get("price_max"):
+            active_constraints.append(f"预算≤{entities['price_max']}")
+        constraint_desc = "、".join(active_constraints) if active_constraints else "当前条件"
+        logger.info("clarification_ask", reason="search_failed", constraints=active_constraints)
+        return {
+            "should_ask": True,
+            "strategy": "ask",
+            "reason": f"搜索无结果（{constraint_desc}），需要用户放宽条件或调整方向",
+            "fields": [],
+            "question_count": 1,
+            "question_type": "search_failed_relax",
+            "question_spec": {
+                "must_ask": [],
+                "context": f"搜索'{constraint_desc}'无结果",
+                "hint": "请用户放宽品牌/价格/品类限制，或推荐相近替代方案",
+            },
+            "assumptions": None,
+        }
 
     # Already asked once and user didn't answer relevant fields → assume
     if round_num >= 1 and any(f not in asked_fields for f in missing):
@@ -308,6 +336,11 @@ tool_registry.register(ToolDef(
                 "type": "array",
                 "items": {"type": "string"},
                 "description": "已追问过的字段列表（避免重复追问）",
+            },
+            "search_failed": {
+                "type": "boolean",
+                "description": "上一次搜索是否返回 0 结果。当检索无结果时传 true，系统会强制追问用户放宽条件。",
+                "default": False,
             },
         },
         "required": ["entities", "asked_fields"],

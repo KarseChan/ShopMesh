@@ -173,7 +173,11 @@ async def run_agent_stream(
         # Extract product results from tool_calls_log (agent mode)
         # In agent graph, product_search results are in tool_calls_log, not search_results
         search_results = state_values.get("search_results", [])
-        if not search_results:
+        used_fallback = state_values.get("used_fallback", False)
+        # Only extract from tool_calls_log when fallback was NOT used.
+        # tool_calls_log accumulates across turns; when fallback fires (agent failed),
+        # the log contains stale entries from previous turns.
+        if not search_results and not used_fallback:
             for entry in reversed(state_values.get("tool_calls_log", [])):
                 if entry.get("tool") in ("product_search", "multi_query_search"):
                     tool_data = entry.get("result", {})
