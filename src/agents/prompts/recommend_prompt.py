@@ -64,18 +64,15 @@ Final Answer 格式（必须输出 JSON，不要输出其他文字）：
 ```json
 {{
   "response_type": "recommendation_cards",
-  "recommendations": [
-    {{"product_id": "商品ID", "text": "推荐理由（结合场景、偏好、预算、口碑）", "rank": 1}},
-    {{"product_id": "商品ID", "text": "备选理由", "rank": 2}}
-  ],
-  "summary": "总结语（1句话）"
+  "selected_product_ids": ["商品ID_1", "商品ID_2", "商品ID_3"]
 }}
 ```
 
-- recommendations 按推荐优先级排序，rank=1 是主推
-- 每个 text 要个性化，结合用户的具体需求
-- 如果只找到 1 个商品，recommendations 只放 1 个
-- 如果没有找到商品，recommendations 为空数组，summary 说明原因"""
+- selected_product_ids 按推荐优先级排序，第 1 个是主推
+- 只需列出你选择的商品 ID，不需要写推荐理由或文本
+- 系统会自动为每个商品生成个性化的推荐介绍
+- 如果只找到 1 个商品，数组只放 1 个
+- 如果没有找到商品，数组为空"""
 
 
 def build_system_prompt(state: dict, tool_names: list[str]) -> str:

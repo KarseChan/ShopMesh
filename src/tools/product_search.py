@@ -85,7 +85,7 @@ def _split_matches(ranked: list[dict], product_type: str | None) -> tuple[list[s
     for p in ranked:
         pid = p.get("product_id", "")
         pt_score = p.get("rank_reasons", {}).get("product_type_match", 0)
-        if pt_score >= 0.9:
+        if pt_score >= 0.7:
             exact.append(pid)
         else:
             supplemental.append(pid)

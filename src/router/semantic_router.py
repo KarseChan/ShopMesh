@@ -80,24 +80,50 @@ async def build_intent_index():
 async def classify(query: str) -> tuple[dict, float]:
     """Classify a query using semantic similarity.
 
-    Returns (intent_dict, confidence). If no match exceeds threshold, intent_dict is empty.
+    Returns (intent_dict, confidence) with multi-label support.
+    Searches top-5, returns all intents above threshold as user_goals list.
+    Falls back to top-1 if none exceed threshold.
     """
     embedder = get_embedder()
     store = get_vector_store()
+    threshold = config.get("router", {}).get("semantic_threshold", 0.80)
 
     vec = await embedder.aembed(query)
-    results = await store.search(_COLLECTION, vec, limit=1)
+    results = await store.search(_COLLECTION, vec, limit=5)
 
     if not results:
         return {}, 0.0
 
-    best = results[0]
-    flat_intent = best["payload"]["intent"]
-    confidence = best["score"]
+    # Collect all intents above threshold
+    matched_goals = []
+    best_confidence = 0.0
+    best_flat_intent = ""
+    for r in results:
+        flat_intent = r["payload"]["intent"]
+        score = r["score"]
+        if score > best_confidence:
+            best_confidence = score
+            best_flat_intent = flat_intent
+        if score >= threshold:
+            mapped = _INTENT_MAP.get(flat_intent)
+            if mapped and mapped["user_goal"] not in matched_goals:
+                matched_goals.append(mapped["user_goal"])
 
-    # Map flat intent to three-layer structure
-    intent_dict = _INTENT_MAP.get(flat_intent, {})
-    if not intent_dict:
+    # If nothing above threshold, use top-1 as fallback (lower confidence)
+    if not matched_goals and best_flat_intent:
+        mapped = _INTENT_MAP.get(best_flat_intent, {})
+        if mapped:
+            return {
+                "user_goals": [mapped["user_goal"]],
+                "task_type": mapped["task_type"],
+                "execution_hint": mapped["execution_hint"],
+            }, best_confidence
         return {}, 0.0
 
-    return intent_dict, confidence
+    # Use the best match's task_type and execution_hint
+    best_mapped = _INTENT_MAP.get(best_flat_intent, {})
+    return {
+        "user_goals": matched_goals,
+        "task_type": best_mapped.get("task_type", "product_search"),
+        "execution_hint": best_mapped.get("execution_hint", "direct_search"),
+    }, best_confidence

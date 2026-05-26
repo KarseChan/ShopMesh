@@ -13,7 +13,9 @@ import re
 from src.agents.agent_config import (
     get_agent_config,
     get_tool_schemas_for_agent,
+    merge_agent_configs,
     resolve_agent,
+    resolve_agents,
 )
 from src.agents.response_schemas import build_repair_prompt, parse_response_json
 from src.graph.tool_executor import execute_tool
@@ -31,22 +33,42 @@ _INJECTABLE_FIELDS = ("soft_requirements", "hard_constraints", "gender", "brand"
 # ──────────────────────────────────────────────
 
 async def node_agent_router(state: dict) -> dict:
-    """Route to specialized agent based on intent. Pure if/else, no LLM."""
-    intent = state.get("intent", {})
-    user_goal = intent.get("user_goal", "") if isinstance(intent, dict) else ""
-    agent_name = resolve_agent(user_goal)
+    """Route to specialized agent based on intent. Pure if/else, no LLM.
 
-    # Set max_iterations from agent config
-    cfg = get_agent_config(agent_name)
+    Supports multi-label: when user_goals contains multiple intents, merges
+    agent capabilities (union tools, max iterations, primary agent's prompt).
+    """
+    intent = state.get("intent", {})
+    user_goals = state.get("user_goals", [])
+
+    # Fallback: extract from intent dict if user_goals not in state
+    if not user_goals:
+        if isinstance(intent, dict):
+            raw = intent.get("user_goals", [])
+            if isinstance(raw, list) and raw:
+                user_goals = raw
+            else:
+                # Legacy single-value compat
+                single = intent.get("user_goal", "")
+                if single:
+                    user_goals = [single]
+        if not user_goals:
+            user_goals = ["recommend_product"]
+
+    agent_names = resolve_agents(user_goals)
+    cfg = merge_agent_configs(agent_names)
 
     logger.info("agent_routed",
-                user_goal=user_goal,
-                agent=agent_name,
+                user_goals=user_goals,
+                agents=agent_names,
+                primary_agent=cfg.name,
+                merged_tools=cfg.tools,
                 max_iterations=cfg.max_iterations,
-                response_type=cfg.response_type)
+                response_type=cfg.response_type,
+                multi_label=len(agent_names) > 1)
 
     return {
-        "active_agent": agent_name,
+        "active_agent": cfg.name,
         "max_iterations": cfg.max_iterations,
         "response_type": cfg.response_type,
     }
@@ -103,6 +125,31 @@ def _build_messages(state: dict, system_prompt: str) -> list[dict]:
     product data from previous turns confusing the LLM.
     """
     messages = [{"role": "system", "content": system_prompt}]
+
+    # Inject prior task results from DAG executor as context
+    prior_results = state.get("_prior_task_results", {})
+    if prior_results:
+        context_parts = []
+        for task_id, result in prior_results.items():
+            if isinstance(result, dict) and result.get("success"):
+                data = result.get("data", {})
+                if isinstance(data, dict) and "data" in data:
+                    # Tool result: summarize products
+                    products = data["data"]
+                    if isinstance(products, list) and products:
+                        summaries = []
+                        for p in products[:5]:
+                            name = p.get("name", "")
+                            price = p.get("price", "")
+                            pid = p.get("product_id", "")
+                            summaries.append(f"  - {pid}: {name} (¥{price})")
+                        context_parts.append(f"[{task_id}] 找到 {len(products)} 个商品:\n" + "\n".join(summaries))
+                elif isinstance(data, dict) and "final_response" in data:
+                    # Agent result: include summary
+                    context_parts.append(f"[{task_id}] {data['final_response'][:200]}")
+        if context_parts:
+            prior_context = "已完成的前置任务结果:\n" + "\n\n".join(context_parts)
+            messages.append({"role": "user", "content": prior_context})
 
     # Only include the last user message, skip previous turns' assistant responses
     # to avoid stale recommendation data polluting the current turn's context
@@ -262,14 +309,22 @@ async def _run_agent_loop(state: dict, agent_name: str) -> dict:
     # Build result
     recommendations = []
     summary = content
+    selected_ids = []
 
     if parsed and isinstance(parsed, dict):
         # Normalize keys
         parsed = {k.strip().strip('"').strip("'").strip(): v for k, v in parsed.items()}
-        if "recommendations" in parsed:
+
+        # New format: agent only outputs selected_product_ids (no text)
+        if "selected_product_ids" in parsed:
+            selected_ids = [pid for pid in parsed["selected_product_ids"] if pid]
+            logger.info("agent_selection_only", agent=agent_name, count=len(selected_ids))
+        # Old format: agent outputs full recommendations with text
+        elif "recommendations" in parsed:
             recommendations = parsed["recommendations"]
         elif "products" in parsed:
             recommendations = parsed["products"]
+
         if "summary" in parsed:
             summary = parsed["summary"]
         elif "verdict" in parsed:
@@ -281,6 +336,21 @@ async def _run_agent_loop(state: dict, agent_name: str) -> dict:
         "response_type": cfg.response_type,
         "iteration": state.get("iteration", 0) + 1,
     }
+
+    # Set narrative streaming flags
+    # New format: selected_product_ids from parsed output
+    if selected_ids:
+        result["selected_product_ids"] = selected_ids
+        result["stream_narrative"] = True
+    # Old format: extract product IDs from recommendations
+    elif recommendations:
+        for rec in recommendations:
+            pid = rec.get("product_id", "")
+            if pid:
+                selected_ids.append(pid)
+        if selected_ids:
+            result["selected_product_ids"] = selected_ids
+            result["stream_narrative"] = True
 
     # Merge structured data for frontend
     if parsed:

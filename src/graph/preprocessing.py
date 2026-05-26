@@ -178,19 +178,24 @@ async def _run_normal_preprocessing(user_input: str, user_id: str, state: dict) 
 
     # Skip disambiguation for scenarios where null category/product_type is expected,
     # or for comparison queries (multiple brands are expected, disambiguation is irrelevant)
-    user_goal = intent.get("user_goal", "") if isinstance(intent, dict) else ""
-    if entities.get("ambiguous") and scenario not in _NO_DISAMBIGUATE_SCENARIOS and user_goal != "compare_products":
+    user_goals = intent.get("user_goals", []) if isinstance(intent, dict) else []
+    if not user_goals:
+        single = intent.get("user_goal", "") if isinstance(intent, dict) else ""
+        user_goals = [single] if single else []
+    is_compare = "compare_products" in user_goals
+
+    if entities.get("ambiguous") and scenario not in _NO_DISAMBIGUATE_SCENARIOS and not is_compare:
         entities["_raw_query"] = user_input
         disambig_result = await disambiguate(entities)
         entities = disambig_result["entities"]
         if not disambig_result["resolved"]:
             logger.info("disambiguation_pending", question=disambig_result.get("question"))
-    elif entities.get("ambiguous") and (scenario in _NO_DISAMBIGUATE_SCENARIOS or user_goal == "compare_products"):
+    elif entities.get("ambiguous") and (scenario in _NO_DISAMBIGUATE_SCENARIOS or is_compare):
         # Clear ambiguous flag — disambiguation is not needed for these cases
         entities["ambiguous"] = False
         entities["ambiguous_fields"] = []
         logger.info("disambiguation_skipped",
-                     reason=f"scenario '{scenario}'" if scenario in _NO_DISAMBIGUATE_SCENARIOS else f"intent '{user_goal}'")
+                     reason=f"scenario '{scenario}'" if scenario in _NO_DISAMBIGUATE_SCENARIOS else f"intent '{user_goals}'")
 
     missing_fields = entities.get("missing_critical_fields", [])
     if missing_fields:
@@ -205,8 +210,15 @@ async def _run_normal_preprocessing(user_input: str, user_id: str, state: dict) 
     else:
         search_plan = await plan_search(entities, user_input)
 
+    # Extract user_goals as top-level field for agent_router
+    user_goals = intent.get("user_goals", []) if isinstance(intent, dict) else []
+    if not user_goals:
+        single = intent.get("user_goal", "") if isinstance(intent, dict) else ""
+        user_goals = [single] if single else ["recommend_product"]
+
     return {
         "intent": intent,
+        "user_goals": user_goals,
         "entities": entities,
         "memory_chunks": memories if isinstance(memories, list) else [],
         "search_plan": search_plan,
@@ -347,8 +359,15 @@ async def node_preprocess(state: dict) -> dict:
                          filled_fields=filled_fields,
                          remaining_missing=missing_fields)
 
+            # Preserve user_goals from previous intent
+            prev_goals = intent.get("user_goals", []) if isinstance(intent, dict) else []
+            if not prev_goals:
+                single = intent.get("user_goal", "") if isinstance(intent, dict) else ""
+                prev_goals = [single] if single else ["recommend_product"]
+
             return {
                 "intent": intent,
+                "user_goals": prev_goals,
                 "entities": entities,
                 "memory_chunks": [],
                 "search_plan": search_plan,
@@ -360,8 +379,15 @@ async def node_preprocess(state: dict) -> dict:
                      confidence=routing["confidence"],
                      reason=routing["reason"])
         # Clear pending and let Agent decide (assume strategy)
+        prev_intent = state.get("intent", {})
+        prev_goals = prev_intent.get("user_goals", []) if isinstance(prev_intent, dict) else []
+        if not prev_goals:
+            single = prev_intent.get("user_goal", "") if isinstance(prev_intent, dict) else ""
+            prev_goals = [single] if single else ["recommend_product"]
+
         return {
-            "intent": state.get("intent", {}),
+            "intent": prev_intent,
+            "user_goals": prev_goals,
             "entities": previous_entities,
             "memory_chunks": [],
             "search_plan": {

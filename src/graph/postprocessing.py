@@ -167,7 +167,15 @@ async def node_postprocess(state: dict) -> dict:
     response = _get_final_response(state)
     entities = state.get("entities", {})
     intent_raw = state.get("intent", {})
-    intent = intent_raw.get("user_goal", "") if isinstance(intent_raw, dict) else str(intent_raw)
+    # Support multi-label user_goals (list) or legacy user_goal (string)
+    if isinstance(intent_raw, dict):
+        goals = intent_raw.get("user_goals", [])
+        if not goals:
+            single = intent_raw.get("user_goal", "")
+            goals = [single] if single else []
+        intent = ",".join(goals)
+    else:
+        intent = str(intent_raw)
     user_id = state.get("user_id", "default_user")
     session_id = state.get("session_id", user_id)
 

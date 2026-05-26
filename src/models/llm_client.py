@@ -3,6 +3,7 @@
 import asyncio
 import json
 import re
+from collections.abc import AsyncGenerator
 from functools import lru_cache
 
 import httpx
@@ -22,7 +23,7 @@ class LLMClient:
 
     # Separate connect vs read timeouts: fail fast on unreachable servers,
     # but allow LLM time to generate responses.
-    _CONNECT_TIMEOUT = 5.0    # seconds — server must accept connection within this
+    _CONNECT_TIMEOUT = 15.0   # seconds — generous for LLM servers under load
     _READ_TIMEOUT = 120.0     # seconds — LLM can take a while to respond
 
     def __init__(self, model: str, base_url: str, api_key: str = "",
@@ -81,6 +82,76 @@ class LLMClient:
                     last_error = e
                     delay = _BASE_DELAY * (2 ** attempt)
                     logger.warning("llm_retry", attempt=attempt + 1, max_retries=_MAX_RETRIES,
+                                   status=e.response.status_code, delay=delay)
+                    if attempt < _MAX_RETRIES - 1:
+                        await asyncio.sleep(delay)
+                else:
+                    raise
+
+        raise last_error
+
+    async def chat_stream(self, messages: list[dict], tools: list[dict] | None = None) -> AsyncGenerator[str, None]:
+        """Stream chat completion — yields content deltas as they arrive.
+
+        Uses OpenAI-compatible SSE format (stream: true).
+        Retries on connection errors, same as chat().
+        """
+        url = f"{self.base_url}/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+        }
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "stream": True,
+        }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+
+        timeout = httpx.Timeout(
+            connect=self._CONNECT_TIMEOUT,
+            read=self._READ_TIMEOUT,
+            write=10.0,
+            pool=5.0,
+        )
+
+        last_error = None
+        for attempt in range(_MAX_RETRIES):
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    async with client.stream("POST", url, json=payload, headers=headers) as resp:
+                        resp.raise_for_status()
+                        async for line in resp.aiter_lines():
+                            if not line.startswith("data: "):
+                                continue
+                            data_str = line[6:]
+                            if data_str == "[DONE]":
+                                return
+                            try:
+                                chunk = json.loads(data_str)
+                                delta = chunk.get("choices", [{}])[0].get("delta", {})
+                                content = delta.get("content", "")
+                                if content:
+                                    yield content
+                            except (json.JSONDecodeError, IndexError, KeyError):
+                                continue
+                return  # success, exit retry loop
+            except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout) as e:
+                last_error = e
+                delay = _BASE_DELAY * (2 ** attempt)
+                logger.warning("llm_stream_retry", attempt=attempt + 1, max_retries=_MAX_RETRIES,
+                               error_type=type(e).__name__, delay=delay)
+                if attempt < _MAX_RETRIES - 1:
+                    await asyncio.sleep(delay)
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code >= 500:
+                    last_error = e
+                    delay = _BASE_DELAY * (2 ** attempt)
+                    logger.warning("llm_stream_retry", attempt=attempt + 1, max_retries=_MAX_RETRIES,
                                    status=e.response.status_code, delay=delay)
                     if attempt < _MAX_RETRIES - 1:
                         await asyncio.sleep(delay)

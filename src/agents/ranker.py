@@ -344,6 +344,14 @@ def _score_product_type_match(product: dict, product_type: str | None) -> float:
         return 0.9
     if product_type in " ".join(product.get("features", [])):
         return 0.8
+    # Fuzzy: check if product_type shares a root with the product's type
+    # e.g., "鞋子" shares "鞋" with "运动鞋", "皮鞋"
+    p_type = product.get("product_type", "")
+    if p_type and len(product_type) >= 2:
+        # Check if the core noun (last char) appears in the product's type
+        core = product_type[-1]  # "鞋子" → "鞋"
+        if core in p_type:
+            return 0.7
     return 0.1
 
 

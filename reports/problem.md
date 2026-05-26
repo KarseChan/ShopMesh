@@ -1532,3 +1532,173 @@ if search_results and recommendations:  # 原来只有 if search_results:
 ```
 
 **状态**: 已修复
+
+---
+
+## P31: SSE 流式传输是"伪流式" — results/explanation 在图执行完毕后才一次性推送
+
+**发现时间**: 2026-05-21
+
+**现象**: 前端虽然通过 SSE 接收数据，但用户看到的效果是 loading → 长时间等待 → 产品卡片+推荐理由同时出现。中间只有 `intent`、`entities`、`tool_call` 等对用户无实际价值的中间事件，没有真正的"流式"体验。
+
+**根因**: 三层阻塞叠加：
+
+1. **results 延迟推送**：agent 节点完成时搜索结果已在 output 中，但代码在 `astream_events` 循环结束后、通过 `await graph.aget_state(config)` 取最终 state 时才提取和发送
+2. **explanation 未逐 token 流式**：`LLMClient.chat()` 使用 `resp.json()` 非流式方式，`final_response` 作为完整文本一次性返回
+3. **aget_state 阻塞**：`astream_events` 循环结束后额外调用 `aget_state` 提取最终状态，增加一次等待
+
+**解决方案**: 分两步改进流式事件推送层，不改动图节点内部逻辑：
+
+**Step 1: results 提前 yield**
+在 `astream_events` 循环中，检测到 agent 节点完成（`on_chain_end`）时，从 output 的 `tool_calls_log` 中提取搜索结果并立即 yield `results` 事件。
+
+**Step 2: explanation 逐 token 流式**
+- `LLMClient` 新增 `chat_stream()` 方法，使用 `httpx.stream()` + SSE 解析实现流式 LLM 调用
+- 图执行完成后，用 `chat_stream()` 发起新的流式 LLM 调用生成推荐总结
+- 逐 token yield `explanation_delta` 事件，前端拼接实现打字机效果
+- 同时保留 `explanation` 兼容事件
+
+**Step 3: 移除 aget_state 阻塞**
+在 `astream_events` 循环中通过 `collect_state_from_events()` 直接收集 state，不再额外调用 `aget_state`。
+
+**前端改动**:
+- `useChatStream.ts`: 新增 `explanation_delta` 事件处理（追加 delta），新增 `isStreaming` 状态字段
+- `ChatBox.tsx`: 添加 `StreamingCursor` 组件（闪烁光标），流式过程中在内容末尾显示
+
+**改动文件**:
+- `src/models/llm_client.py` — 新增 `chat_stream()` 方法
+- `src/graph/stream_utils.py` — 新增流式辅助函数
+- `src/graph/multi_agent_graph.py` — 修改 `run_multi_agent_stream()`
+- `src/graph/shopping_agent.py` — 修改 `run_agent_stream()`
+- `frontend/src/hooks/useChatStream.ts` — 处理新事件 + isStreaming
+- `frontend/src/components/ChatBox.tsx` — 打字光标
+
+**状态**: 已修复
+
+---
+
+## P32: 搜索"男鞋"返回裤子/夹克 — 品类白名单缺少"鞋靴"导致全链路偏差
+
+**发现时间**: 2026-05-22
+
+**现象**: 用户搜索"男鞋"，返回的是裤子、夹克等服饰商品，没有鞋子。`product_search` 结果为 0 exact、10 supplemental，全部是服装。
+
+**根因**: 三层缺陷叠加：
+
+1. **实体抽取器品类白名单缺少"鞋靴"**（主因）：`entity_extractor.py` 的 system prompt 限制品类为 `护肤、奶茶、数码、服饰、箱包、食品、家居、母婴、运动`，"鞋靴"不在其中。LLM 被迫将"男鞋"归类为 `category: "服饰"`，导致后续过滤全偏。
+
+2. **filter_builder 的 `_PRODUCT_TYPE_MAP` 缺少通用词"鞋子"**：Map 中有"运动鞋"、"皮鞋"等具体类型，但没有通用的"鞋子"。当 `category="服饰"` + `product_type="鞋子"` 时，Layer 1a（product_type 精确匹配）失败，Layer 1b（category 匹配）将"服饰"扩展为所有服装品类，鞋子被过滤掉。
+
+3. **ranker 的 product_type 匹配过于严格**：`_score_product_type_match` 只做精确匹配和子串匹配，"鞋子" != "运动鞋" 且 "鞋子" 不在商品名中，所有商品都得到 0.1 分（乘法惩罚），排序接近随机。
+
+**执行流程还原**:
+```
+用户: "男鞋"
+→ entity_extractor: {category: "服饰", product_type: "鞋子", gender: "男"}
+→ filter_builder: "服饰" → ["男装/", "女装/"] → 过滤掉"鞋靴/"品类
+→ Qdrant: MatchAny(["男装/上装", "男装/下装"]) → 只返回服装
+→ ranker: product_type_match=0.1（全部）→ 排序随机
+→ product_search: 0 exact, 10 supplemental（全是裤子/夹克）
+```
+
+**数据验证**: `mock_data.json` 包含 6 款鞋子（prod_063~068），品类为"鞋靴/运动鞋"和"鞋靴/皮鞋"，但因过滤器排除了"鞋靴/"前缀，这些商品永远无法被检索到。
+
+**解决方案**:
+
+1. **entity_extractor.py**：品类白名单添加"鞋靴"
+   ```
+   品类只限：护肤、奶茶、数码、服饰、鞋靴、箱包、食品、家居、母婴、运动
+   ```
+
+2. **filter_builder.py**：`_PRODUCT_TYPE_MAP` 添加通用鞋类词
+   ```python
+   "鞋子": ["鞋靴/运动鞋", "鞋靴/皮鞋"],
+   "男鞋": ["鞋靴/运动鞋", "鞋靴/皮鞋"],
+   "女鞋": ["鞋靴/运动鞋", "鞋靴/皮鞋"],
+   ```
+   这样 Layer 1a（product_type 精确匹配）在 Layer 1b（category 匹配）之前命中，正确返回鞋靴品类。
+
+3. **ranker.py**：`_score_product_type_match` 添加模糊匹配
+   ```python
+   # "鞋子" 的尾字 "鞋" 出现在 "运动鞋" 中 → 0.7 分
+   core = product_type[-1]
+   if core in p_type:
+       return 0.7
+   ```
+
+4. **product_search.py**：`_split_matches` 阈值从 0.9 降到 0.7，使模糊匹配的商品归入 exact 而非 supplemental。
+
+**改动文件**:
+- `src/agents/entity_extractor.py` — 品类白名单添加"鞋靴"
+- `src/retrieval/filter_builder.py` — `_PRODUCT_TYPE_MAP` 添加鞋子/男鞋/女鞋
+- `src/agents/ranker.py` — `_score_product_type_match` 添加尾字模糊匹配
+- `src/tools/product_search.py` — `_split_matches` 阈值 0.9→0.7
+
+**状态**: 已修复
+
+---
+
+## P33: "男鞋推荐" 路由到 search_agent — intent_samples 推荐样本错误归类
+
+**发现时间**: 2026-05-22
+
+**现象**: 用户提问"男鞋推荐"，系统路由到 `search_agent` 而非 `recommend_agent`。同理，"推荐几款男鞋"、"有什么好用的护肤品推荐"等推荐类请求也被路由到搜索Agent。
+
+**根因**: `data/intent_samples.json` 中，多个推荐类样本被错误放在 `"search"` 意图下：
+
+```
+search 意图中混入的推荐样本:
+  "有什么好用的护肤品推荐"
+  "推荐一款运动鞋"
+  "有什么好喝的饮料"
+  "帮我推荐一款面霜"
+  "推荐一款口红"
+```
+
+语义路由器基于 embedding 相似度分类意图。当用户说"男鞋推荐"时，与 search 意图下的"推荐一款运动鞋"相似度最高，因此被分类为 `intent="search"`。而 `specialized_agents.py` 的 `INTENT_TO_AGENT` 映射中 `search → search_agent`，导致路由错误。
+
+**路由链路还原**:
+```
+用户: "男鞋推荐"
+→ semantic_router: "推荐一款运动鞋" (search intent) 相似度最高
+→ intent = "search"
+→ resolve_agent: INTENT_TO_AGENT["search"] = "search_agent"
+→ 错误路由到 search_agent
+```
+
+**解决方案**: 修正 `data/intent_samples.json`，将推荐类样本从 `"search"` 移到 `"recommend"` 意图：
+
+### 从 search 移除的样本（5个）
+- "有什么好用的护肤品推荐"
+- "推荐一款运动鞋"
+- "有什么好喝的饮料"
+- "帮我推荐一款面霜"
+- "推荐一款口红"
+
+### recommend 新增的样本（7个）
+- 以上 5 个从 search 移入
+- "男鞋推荐"（新增）
+- "推荐几款男鞋"（新增）
+
+### 重建语义路由索引
+
+修改 intent_samples.json 后需重建 Qdrant 中的意图索引：
+```python
+from src.router.semantic_router import build_intent_index
+count = await build_intent_index()  # 77 samples (原 75)
+```
+
+**修复后效果**:
+```
+用户: "男鞋推荐"
+→ semantic_router: "推荐几款男鞋" (recommend intent) 相似度最高
+→ intent = "recommend"
+→ resolve_agent: INTENT_TO_AGENT["recommend"] = "recommend_agent"
+→ 正确路由到 recommend_agent
+```
+
+**改动文件**:
+- `data/intent_samples.json` — 推荐样本从 search 移到 recommend + 新增鞋类推荐样本
+- Qdrant `intent_samples` collection — 重建索引（77 samples）
+
+**状态**: 已修复

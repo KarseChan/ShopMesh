@@ -24,6 +24,12 @@ class RecommendationResponse(BaseModel):
     summary: str
 
 
+class SelectionResponse(BaseModel):
+    """New format: agent only selects product IDs, narrative writer generates text."""
+    response_type: Literal["recommendation_cards"]
+    selected_product_ids: list[str]
+
+
 # --- Search Agent ---
 
 class ProductGridItem(BaseModel):
@@ -112,7 +118,14 @@ def parse_response_json(raw_text: str, response_type: str) -> dict | None:
         try:
             schema.model_validate(parsed)
         except ValidationError:
-            return None
+            # Fallback: try SelectionResponse for recommendation_cards
+            if response_type == "recommendation_cards":
+                try:
+                    SelectionResponse.model_validate(parsed)
+                except ValidationError:
+                    return None
+            else:
+                return None
 
     return parsed
 

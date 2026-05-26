@@ -50,10 +50,11 @@ def _sse_event(event: str, data: dict) -> str:
 async def chat(request: Request):
     """Send a message and receive SSE stream of shopping results.
 
-    Request body: {"message": str, "session_id": str?, "mode": "agent"|"workflow"|"multi_agent"?}
-    mode defaults to "agent" (hybrid Agent graph).
-    mode="workflow" uses the original shopping_graph pipeline.
-    mode="multi_agent" uses the intent-specific specialized agents.
+    Request body: {"message": str, "session_id": str?, "mode": str?}
+    mode="multi_agent" (default): Orchestrator DAG — LLM decomposes compound intents into task DAG
+    mode="multi_agent_legacy": Legacy multi-agent — deterministic router + single agent per intent
+    mode="workflow": Original shopping_graph pipeline
+    mode="agent": Hybrid Agent graph
     """
     body = await request.json()
     message = body.get("message", "")
@@ -79,7 +80,12 @@ async def chat(request: Request):
                     data = event.get("data", {})
                     yield _sse_event(etype, data)
             elif mode == "multi_agent":
-                async for event in run_multi_agent_stream(message, user_id=user_id, session_id=session_id, thread_id=f"multi-{session_id}"):
+                async for event in run_multi_agent_stream(message, user_id=user_id, session_id=session_id, thread_id=f"multi-{session_id}", mode="orchestrator"):
+                    etype = event.get("event", "unknown")
+                    data = event.get("data", {})
+                    yield _sse_event(etype, data)
+            elif mode == "multi_agent_legacy":
+                async for event in run_multi_agent_stream(message, user_id=user_id, session_id=session_id, thread_id=f"multi-{session_id}", mode="legacy"):
                     etype = event.get("event", "unknown")
                     data = event.get("data", {})
                     yield _sse_event(etype, data)

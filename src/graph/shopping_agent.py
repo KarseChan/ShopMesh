@@ -24,6 +24,11 @@ from src.graph.fallback import node_fallback
 from src.graph.postprocessing import node_postprocess
 from src.graph.preprocessing import node_preprocess
 from src.graph.react_node import node_react_loop, should_continue
+from src.graph.stream_utils import (
+    extract_search_results_from_tool_log,
+    stream_explanation,
+    stream_narrative,
+)
 from src.observability.logger import get_logger, generate_request_id, set_request_context
 
 logger = get_logger("shopping_agent")
@@ -120,6 +125,7 @@ async def run_agent_stream(
         "session_window": [],
         "session_summary": "",
         "intent": {},
+        "user_goals": [],
         # entities: 不覆盖，让 checkpointer 保留前一轮值，实现 follow-up 上下文继承
         "memory_chunks": [],
         "search_plan": {},
@@ -136,74 +142,107 @@ async def run_agent_stream(
     config = {"configurable": {"thread_id": tid}}
 
     try:
-        # Stream graph execution
+        yield {"event": "status", "data": {"phase": "thinking", "message": "正在分析您的需求..."}}
+
         async for event in graph.astream_events(initial_state, config=config, version="v2"):
             kind = event.get("event", "")
 
-            # Node completion events
             if kind == "on_chain_end":
                 node_name = event.get("name", "")
                 output = event.get("data", {}).get("output", {})
 
-                if node_name == "preprocess" and output:
+                if not output or not isinstance(output, dict):
+                    continue
+
+                if node_name == "preprocess":
                     yield {"event": "intent", "data": {"intent": output.get("intent", "")}}
                     yield {"event": "entities", "data": {"entities": output.get("entities", {})}}
 
-                elif node_name == "react_loop" and output:
-                    # Stream tool call info if available
+                elif node_name == "react_loop":
                     tool_log = output.get("tool_calls_log", [])
                     if tool_log:
                         latest = tool_log[-1]
+                        tool_name = latest.get("tool", "")
                         yield {"event": "tool_call", "data": {
-                            "tool": latest.get("tool", ""),
+                            "tool": tool_name,
                             "args": latest.get("args", {}),
                         }}
+                        if tool_name in ("product_search", "multi_query_search"):
+                            yield {"event": "status", "data": {"phase": "searching", "message": "正在搜索商品..."}}
 
-                elif node_name == "fallback" and output:
+                elif node_name == "fallback":
                     yield {"event": "fallback", "data": {"used": True}}
 
-                elif node_name == "postprocess" and output:
-                    pass  # No user-facing event needed
+                elif node_name == "postprocess":
+                    pass
 
-        # Get final state for the final response
+        # Get complete final state (has accumulated tool_calls_log across all iterations)
         final_state = await graph.aget_state(config)
         state_values = final_state.values if final_state else {}
 
         final_response = state_values.get("final_response", "")
 
-        # Extract product results from tool_calls_log (agent mode)
-        # In agent graph, product_search results are in tool_calls_log, not search_results
+        # Extract search results from accumulated tool_calls_log
         search_results = state_values.get("search_results", [])
+        tool_log = state_values.get("tool_calls_log", [])
         used_fallback = state_values.get("used_fallback", False)
-        # Only extract from tool_calls_log when fallback was NOT used.
-        # tool_calls_log accumulates across turns; when fallback fires (agent failed),
-        # the log contains stale entries from previous turns.
         if not search_results and not used_fallback:
-            for entry in reversed(state_values.get("tool_calls_log", [])):
-                if entry.get("tool") in ("product_search", "multi_query_search"):
-                    tool_data = entry.get("result", {})
-                    if isinstance(tool_data, dict):
-                        data = tool_data.get("data", tool_data)
-                        search_results = data.get("results", [])
-                    break
+            search_results = extract_search_results_from_tool_log(tool_log)
 
-        # Get structured recommendations
-        recommendations = state_values.get("recommendations", [])
+        # Supplement from response_data
+        response_data = state_values.get("response_data", {})
+        if response_data:
+            resp_products = response_data.get("products", [])
+            if resp_products:
+                existing_ids = {p.get("product_id") or p.get("id") for p in search_results}
+                for rp in resp_products:
+                    rpid = rp.get("product_id")
+                    if rpid and rpid not in existing_ids:
+                        search_results.append(rp)
+                        existing_ids.add(rpid)
 
-        # Send results event only when there are actual recommendations
-        if search_results and recommendations:
-            top_results = search_results[:5]
-            # Filter recommendations to only include products in top_results
-            top_ids = {p.get("product_id", "") for p in top_results}
-            top_recs = [r for r in recommendations if r.get("product_id", "") in top_ids] if recommendations else []
-            yield {"event": "results", "data": {
-                "products": top_results,
-                "recommendations": top_recs,
-            }}
+        recommendations = (
+            state_values.get("recommendations", [])
+            or state_values.get("response_data", {}).get("recommendations", [])
+            or state_values.get("response_data", {}).get("products", [])
+        )
 
-        # Send explanation event
-        if final_response:
-            yield {"event": "explanation", "data": {"text": final_response}}
+        # Extract user query from messages
+        user_query = ""
+        for msg in reversed(state_values.get("messages", [])):
+            role = msg.get("role", "") if isinstance(msg, dict) else getattr(msg, "type", "")
+            if role == "user":
+                user_query = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
+                break
+
+        # Narrative streaming: real LLM streaming per product
+        selected_product_ids = state_values.get("selected_product_ids", [])
+        use_narrative = state_values.get("stream_narrative", False)
+
+        if (use_narrative and selected_product_ids and search_results):
+            yield {"event": "status", "data": {"phase": "preparing", "message": "正在为您整理推荐..."}}
+            logger.info("narrative_stream_start",
+                         product_count=len(search_results),
+                         selected_count=len(selected_product_ids))
+            async for event in stream_narrative(
+                selected_product_ids=selected_product_ids,
+                search_results=search_results,
+                user_query=user_query,
+                agent_summary=final_response,
+            ):
+                yield event
+        else:
+            # Non-recommendation: old path (results + explanation)
+            if search_results:
+                yield {"event": "results", "data": {
+                    "products": search_results[:5],
+                    "recommendations": recommendations,
+                }}
+
+            if final_response:
+                async for token in stream_explanation(state_values):
+                    yield {"event": "explanation_delta", "data": {"delta": token}}
+                yield {"event": "explanation", "data": {"text": final_response}}
 
         yield {"event": "done", "data": {"request_id": request_id}}
 

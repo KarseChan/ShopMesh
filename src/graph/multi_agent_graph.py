@@ -1,6 +1,9 @@
 """Multi-Agent Graph — intent-specific specialized agents with shared preprocessing.
 
-Flow:
+Flow (new Orchestrator DAG path):
+    preprocess → orchestrator → dag_executor → postprocess → END
+
+Flow (legacy path, preserved as fallback):
     preprocess → agent_router → recommend/search/detail/compare/order agent
         → (continue/end/fallback) → postprocess → END
 
@@ -19,7 +22,9 @@ from langgraph.graph import END, StateGraph
 
 from src.graph.agent_state import AgentState
 from src.graph.checkpointer import get_checkpointer
+from src.graph.dag_executor import node_dag_executor
 from src.graph.fallback import node_fallback
+from src.graph.orchestrator import node_orchestrator
 from src.graph.postprocessing import node_postprocess
 from src.graph.preprocessing import node_preprocess
 from src.graph.specialized_agents import (
@@ -31,6 +36,11 @@ from src.graph.specialized_agents import (
     node_search_agent,
     route_to_agent,
     should_continue,
+)
+from src.graph.stream_utils import (
+    extract_search_results_from_tool_log,
+    stream_explanation,
+    stream_narrative,
 )
 from src.observability.logger import get_logger, generate_request_id, set_request_context
 
@@ -46,72 +56,73 @@ def _friendly_error(e: Exception) -> str:
     return "抱歉，处理过程中出现了问题，请稍后再试。"
 
 
-def build_multi_agent_graph():
+def build_multi_agent_graph(use_orchestrator: bool = True):
     """Build the multi-agent graph.
 
-    Nodes:
-        preprocess     — deterministic: intent + entity + memory (parallel) + clarification routing
-        agent_router   — deterministic: if/else on user_goal → agent name
-        recommend_agent — ReAct loop: recommendation-specific prompt + tools
-        search_agent   — ReAct loop: search-specific prompt + tools
-        detail_agent   — ReAct loop: detail-specific prompt + tools
-        compare_agent  — ReAct loop: compare-specific prompt + tools
-        order_agent    — minimal: no loop, direct response
-        fallback       — deterministic pipeline backup
-        postprocess    — deterministic: preference extraction + memory write
+    When use_orchestrator=True (default), uses the new Orchestrator DAG path:
+        preprocess → orchestrator → dag_executor → postprocess → END
 
-    Edges:
-        preprocess → agent_router
-        agent_router → (recommend|search|detail|compare|order)_agent  [conditional]
-        each agent → should_continue → "continue" (self) | "end" (postprocess) | "fallback"
-        order_agent → postprocess  [direct, no loop]
-        fallback → postprocess
-        postprocess → END
+    When use_orchestrator=False, uses the legacy path:
+        preprocess → agent_router → agent → should_continue → postprocess → END
+
+    Both paths share preprocessing and postprocessing.
     """
     graph = StateGraph(AgentState)
 
     # Shared nodes
     graph.add_node("preprocess", node_preprocess)
-    graph.add_node("agent_router", node_agent_router)
-    graph.add_node("fallback", node_fallback)
     graph.add_node("postprocess", node_postprocess)
 
-    # Specialized agent nodes
-    graph.add_node("recommend_agent", node_recommend_agent)
-    graph.add_node("search_agent", node_search_agent)
-    graph.add_node("detail_agent", node_detail_agent)
-    graph.add_node("compare_agent", node_compare_agent)
-    graph.add_node("order_agent", node_order_agent)
+    if use_orchestrator:
+        # === New Orchestrator DAG path ===
+        graph.add_node("orchestrator", node_orchestrator)
+        graph.add_node("dag_executor", node_dag_executor)
 
-    # Entry: preprocess → router
-    graph.set_entry_point("preprocess")
-    graph.add_edge("preprocess", "agent_router")
+        # Entry: preprocess → orchestrator → dag_executor → postprocess → END
+        graph.set_entry_point("preprocess")
+        graph.add_edge("preprocess", "orchestrator")
+        graph.add_edge("orchestrator", "dag_executor")
+        graph.add_edge("dag_executor", "postprocess")
+        graph.add_edge("postprocess", END)
+    else:
+        # === Legacy path (preserved as fallback) ===
+        graph.add_node("agent_router", node_agent_router)
+        graph.add_node("fallback", node_fallback)
+        graph.add_node("recommend_agent", node_recommend_agent)
+        graph.add_node("search_agent", node_search_agent)
+        graph.add_node("detail_agent", node_detail_agent)
+        graph.add_node("compare_agent", node_compare_agent)
+        graph.add_node("order_agent", node_order_agent)
 
-    # Router → agent (deterministic conditional)
-    graph.add_conditional_edges("agent_router", route_to_agent, {
-        "recommend_agent": "recommend_agent",
-        "search_agent": "search_agent",
-        "detail_agent": "detail_agent",
-        "compare_agent": "compare_agent",
-        "order_agent": "order_agent",
-    })
+        # Entry: preprocess → router
+        graph.set_entry_point("preprocess")
+        graph.add_edge("preprocess", "agent_router")
 
-    # Each agent → should_continue → self / postprocess / fallback
-    for agent_node in ("recommend_agent", "search_agent", "detail_agent", "compare_agent"):
-        graph.add_conditional_edges(agent_node, should_continue, {
-            "continue": agent_node,
-            "end": "postprocess",
-            "fallback": "fallback",
+        # Router → agent (deterministic conditional)
+        graph.add_conditional_edges("agent_router", route_to_agent, {
+            "recommend_agent": "recommend_agent",
+            "search_agent": "search_agent",
+            "detail_agent": "detail_agent",
+            "compare_agent": "compare_agent",
+            "order_agent": "order_agent",
         })
 
-    # Order agent → postprocess directly (no loop)
-    graph.add_edge("order_agent", "postprocess")
+        # Each agent → should_continue → self / postprocess / fallback
+        for agent_node in ("recommend_agent", "search_agent", "detail_agent", "compare_agent"):
+            graph.add_conditional_edges(agent_node, should_continue, {
+                "continue": agent_node,
+                "end": "postprocess",
+                "fallback": "fallback",
+            })
 
-    # Fallback → postprocess
-    graph.add_edge("fallback", "postprocess")
+        # Order agent → postprocess directly (no loop)
+        graph.add_edge("order_agent", "postprocess")
 
-    # Postprocess → END
-    graph.add_edge("postprocess", END)
+        # Fallback → postprocess
+        graph.add_edge("fallback", "postprocess")
+
+        # Postprocess → END
+        graph.add_edge("postprocess", END)
 
     checkpointer = get_checkpointer("memory")
     return graph.compile(checkpointer=checkpointer)
@@ -123,15 +134,19 @@ async def run_multi_agent_stream(
     session_id: str | None = None,
     thread_id: str | None = None,
     messages: list | None = None,
+    mode: str = "orchestrator",
 ) -> AsyncGenerator[dict, None]:
     """Run the multi-agent graph and yield SSE events.
 
-    Same signature and event format as run_agent_stream() in shopping_agent.py.
+    Args:
+        mode: "orchestrator" (default) for DAG-based execution,
+              "legacy" for the old agent_router path.
     """
     request_id = generate_request_id()
     set_request_context(request_id=request_id, session_id=session_id or user_id)
 
-    graph = build_multi_agent_graph()
+    use_orchestrator = mode == "orchestrator"
+    graph = build_multi_agent_graph(use_orchestrator=use_orchestrator)
     tid = thread_id or f"multi_{user_id}_{uuid.uuid4().hex[:8]}"
 
     initial_messages = messages or []
@@ -142,6 +157,7 @@ async def run_multi_agent_stream(
         "user_id": user_id,
         "session_id": session_id or tid,
         "intent": {},
+        "user_goals": [],
         # entities: 不覆盖，让 checkpointer 保留前一轮值，实现 follow-up 上下文继承
         "memory_chunks": [],
         "search_plan": {},
@@ -156,11 +172,18 @@ async def run_multi_agent_stream(
         "active_agent": "",
         "response_type": "",
         "response_data": {},
+        # Orchestrator DAG fields
+        "task_dag": [],
+        "task_results": {},
+        "task_status": "pending",
     }
 
     config = {"configurable": {"thread_id": tid}}
 
     try:
+        results_yielded = False
+        yield {"event": "status", "data": {"phase": "thinking", "message": "正在分析您的需求..."}}
+
         async for event in graph.astream_events(initial_state, config=config, version="v2"):
             kind = event.get("event", "")
 
@@ -168,23 +191,52 @@ async def run_multi_agent_stream(
                 node_name = event.get("name", "")
                 output = event.get("data", {}).get("output", {})
 
-                if node_name == "preprocess" and output:
+                if not output or not isinstance(output, dict):
+                    continue
+
+                if node_name == "preprocess":
                     yield {"event": "intent", "data": {"intent": output.get("intent", "")}}
                     yield {"event": "entities", "data": {"entities": output.get("entities", {})}}
 
-                elif node_name in ("recommend_agent", "search_agent", "detail_agent", "compare_agent", "order_agent") and output:
+                elif node_name == "orchestrator":
+                    task_dag = output.get("task_dag", [])
+                    yield {"event": "status", "data": {
+                        "phase": "planning",
+                        "message": f"已规划 {len(task_dag)} 个任务",
+                    }}
+                    yield {"event": "task_dag", "data": {
+                        "tasks": [t.get("task_id") for t in task_dag],
+                        "dependencies": {t["task_id"]: t.get("depends_on", []) for t in task_dag},
+                    }}
+
+                elif node_name == "dag_executor":
+                    task_results = output.get("task_results", {})
+                    completed = sum(1 for r in task_results.values()
+                                   if isinstance(r, dict) and r.get("success"))
+                    yield {"event": "status", "data": {
+                        "phase": "executing",
+                        "message": f"已完成 {completed}/{len(task_results)} 个任务",
+                    }}
+
+                elif node_name in ("recommend_agent", "search_agent", "detail_agent", "compare_agent", "order_agent"):
                     tool_log = output.get("tool_calls_log", [])
                     if tool_log:
                         latest = tool_log[-1]
+                        tool_name = latest.get("tool", "")
                         yield {"event": "tool_call", "data": {
-                            "tool": latest.get("tool", ""),
+                            "tool": tool_name,
                             "args": latest.get("args", {}),
                         }}
+                        # Show progress to user
+                        if tool_name in ("product_search", "multi_query_search"):
+                            yield {"event": "status", "data": {"phase": "searching", "message": "正在搜索商品..."}}
+                        elif tool_name == "ask_clarification":
+                            yield {"event": "status", "data": {"phase": "clarifying", "message": "需要更多信息..."}}
 
-                elif node_name == "fallback" and output:
+                elif node_name == "fallback":
                     yield {"event": "fallback", "data": {"used": True}}
 
-        # Get final state
+        # Get complete final state (has accumulated tool_calls_log across all iterations)
         final_state = await graph.aget_state(config)
         state_values = final_state.values if final_state else {}
 
@@ -192,33 +244,14 @@ async def run_multi_agent_stream(
         response_type = state_values.get("response_type", "recommendation_cards")
         response_data = state_values.get("response_data", {})
 
-        # Extract search results from tool_calls_log
+        # Extract search results from accumulated tool_calls_log
         search_results = state_values.get("search_results", [])
         tool_log = state_values.get("tool_calls_log", [])
         used_fallback = state_values.get("used_fallback", False)
-        # Only extract from tool_calls_log when fallback was NOT used.
-        # tool_calls_log is a reducer that accumulates across turns, so when
-        # fallback fires (agent failed), the log contains stale entries from
-        # previous turns that should not be emitted as current results.
         if not search_results and not used_fallback:
-            seen_ids = set()
-            for entry in tool_log:
-                if entry.get("tool") in ("product_search", "multi_query_search"):
-                    tool_data = entry.get("result", {})
-                    if not isinstance(tool_data, dict):
-                        continue
-                    data = tool_data.get("data", tool_data)
-                    if not isinstance(data, dict):
-                        continue
-                    results_list = data.get("results", [])
-                    for r in results_list:
-                        rid = r.get("product_id") or r.get("id")
-                        if rid and rid not in seen_ids:
-                            seen_ids.add(rid)
-                            search_results.append(r)
+            search_results = extract_search_results_from_tool_log(tool_log)
 
-        # Supplement from response_data: for compare/detail agents, response_data
-        # contains the full product list the agent wants to display.
+        # Supplement from response_data
         if response_data:
             resp_products = response_data.get("products", [])
             if resp_products:
@@ -235,23 +268,37 @@ async def run_multi_agent_stream(
             or response_data.get("products", [])
         )
 
-        # Results event: emit when there are actual search results AND recommendations.
-        # For detail_card, search_results is the single product being detailed.
-        # For product_grid / recommendation_cards, search_results are the matched products.
-        # If agent only asked clarification (no search), search_results stays empty.
-        # If fallback returned "no results", recommendations is empty → don't emit zombie cards.
-        if search_results and recommendations:
-            # Collect product_ids referenced in recommendations
-            rec_ids = {r.get("product_id", "") for r in recommendations if r.get("product_id")}
-            # Ensure all recommended products are in the products list
-            result_ids = {p.get("product_id", "") for p in search_results}
+        # Extract user query from messages
+        user_query = ""
+        for msg in reversed(state_values.get("messages", [])):
+            role = msg.get("role", "") if isinstance(msg, dict) else getattr(msg, "type", "")
+            if role == "user":
+                user_query = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
+                break
+
+        # Narrative streaming: real LLM streaming per product
+        selected_product_ids = state_values.get("selected_product_ids", [])
+        use_narrative = state_values.get("stream_narrative", False)
+
+        if (use_narrative and selected_product_ids and search_results
+                and response_type != "comparison_table"):
+            yield {"event": "status", "data": {"phase": "preparing", "message": "正在为您整理推荐..."}}
+            logger.info("narrative_stream_start",
+                         product_count=len(search_results),
+                         selected_count=len(selected_product_ids),
+                         response_type=response_type)
+            async for event in stream_narrative(
+                selected_product_ids=selected_product_ids,
+                search_results=search_results,
+                user_query=user_query,
+                agent_summary=final_response,
+            ):
+                yield event
+        elif search_results and recommendations:
+            # Fallback: old interleaved path (pre-generated text + cards)
             logger.info("sse_results_emit",
                          product_count=len(search_results),
-                         product_ids=[p.get("product_id") for p in search_results],
-                         rec_count=len(recommendations),
-                         rec_ids=list(rec_ids),
-                         response_type=response_type,
-                         final_response_preview=final_response[:200] if final_response else "")
+                         response_type=response_type)
             yield {"event": "results", "data": {
                 "products": search_results,
                 "recommendations": recommendations,
@@ -259,9 +306,16 @@ async def run_multi_agent_stream(
                 "response_data": response_data,
             }}
 
-        # Explanation event
-        if final_response:
-            yield {"event": "explanation", "data": {"text": final_response}}
+            if final_response:
+                async for token in stream_explanation(state_values):
+                    yield {"event": "explanation_delta", "data": {"delta": token}}
+                yield {"event": "explanation", "data": {"text": final_response}}
+        else:
+            # Non-recommendation: text only
+            if final_response:
+                async for token in stream_explanation(state_values):
+                    yield {"event": "explanation_delta", "data": {"delta": token}}
+                yield {"event": "explanation", "data": {"text": final_response}}
 
         yield {"event": "done", "data": {"request_id": request_id}}
 

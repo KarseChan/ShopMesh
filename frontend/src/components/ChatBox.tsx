@@ -6,6 +6,12 @@ import ProductCard from "./ProductCard";
 import ComparisonTable, { type ComparisonData } from "./ComparisonTable";
 import OrderConfirm from "./OrderConfirm";
 
+function StreamingCursor() {
+  return (
+    <span className="inline-block w-0.5 h-4 bg-gray-600 ml-0.5 align-text-bottom animate-pulse" />
+  );
+}
+
 export default function ChatBox() {
   const { messages, isLoading, sendMessage, startOrder, resumeOrder, reportBehavior, pendingOrder } = useChatStream();
   const [input, setInput] = useState("");
@@ -44,7 +50,12 @@ export default function ChatBox() {
           <MessageBubble key={i} message={msg} onOrder={startOrder} onProductClick={reportBehavior} onOptionClick={sendMessage} />
         ))}
 
-        {isLoading && messages[messages.length - 1]?.role !== "assistant" && (
+        {isLoading && (() => {
+          const lastMsg = messages[messages.length - 1];
+          if (!lastMsg || lastMsg.role !== "assistant") return true;
+          if (lastMsg.isLoading && !lastMsg.content && !lastMsg.statusMessage && !lastMsg.narrativeProducts) return true;
+          return false;
+        })() && (
           <div className="flex gap-1 items-center text-gray-400 text-sm">
             <span className="animate-bounce">.</span>
             <span className="animate-bounce delay-100">.</span>
@@ -90,6 +101,75 @@ export default function ChatBox() {
   );
 }
 
+function StreamingContent({ content, isStreaming, className }: { content: string; isStreaming?: boolean; className?: string }) {
+  return (
+    <div className={className}>
+      {content}
+      {isStreaming && <StreamingCursor />}
+    </div>
+  );
+}
+
+function NarrativeRenderer({ message, onOrder, onProductClick }: {
+  message: ChatMessage;
+  onOrder?: (product: Product) => void;
+  onProductClick?: (action: string, product: Product) => void;
+}) {
+  const products = message.narrativeProducts || [];
+  const visibleIds = message.visibleProductIds || [];
+  const introTexts = message.introTexts || {};
+  const summaryText = message.summaryText || "";
+  const isStreaming = message.isStreaming || false;
+
+  // Determine which product is currently being streamed
+  const lastVisibleIdx = visibleIds.length > 0
+    ? products.findIndex((p) => p.product_id === visibleIds[visibleIds.length - 1])
+    : -1;
+  const hasActiveIntro = isStreaming && !summaryText && lastVisibleIdx >= 0;
+
+  return (
+    <>
+      {products.map((product, i) => {
+        const pid = product.product_id || "";
+        const introText = introTexts[pid] || "";
+        const isVisible = visibleIds.includes(pid);
+        const isCurrentIntro = hasActiveIntro && i === lastVisibleIdx;
+
+        // Not yet started for this product
+        if (!introText && !isVisible) return null;
+
+        return (
+          <div key={pid || i} className="space-y-2">
+            {/* Intro text bubble */}
+            {introText && (
+              <div className="bg-gray-100 px-4 py-3 rounded-2xl rounded-bl-sm text-sm leading-relaxed">
+                {introText}
+                {isCurrentIntro && <StreamingCursor />}
+              </div>
+            )}
+            {/* Product card — only shown after product_card event */}
+            {isVisible && (
+              <ProductCard
+                product={product}
+                rank={i + 1}
+                onOrder={onOrder}
+                onProductClick={() => onProductClick?.("click", product)}
+              />
+            )}
+          </div>
+        );
+      })}
+      {/* Summary */}
+      {summaryText && (
+        <div className="bg-gray-100 px-4 py-3 rounded-2xl rounded-bl-sm text-sm leading-relaxed text-gray-600">
+          {summaryText}
+          {isStreaming && <StreamingCursor />}
+        </div>
+      )}
+    </>
+  );
+}
+
 function MessageBubble({ message, onOrder, onProductClick, onOptionClick }: { message: ChatMessage; onOrder?: (product: Product) => void; onProductClick?: (action: string, product: Product) => void; onOptionClick?: (text: string, displayText?: string) => void }) {
   if (message.role === "user") {
     return (
@@ -104,7 +184,7 @@ function MessageBubble({ message, onOrder, onProductClick, onOptionClick }: { me
   return (
     <div className="flex justify-start">
       <div className="max-w-[85%] space-y-3">
-        {message.isLoading && !message.content ? (
+        {message.isLoading && !message.content && !message.statusMessage ? (
           <div className="bg-gray-100 px-4 py-3 rounded-2xl rounded-bl-sm">
             <div className="flex gap-1">
               <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" />
@@ -112,18 +192,33 @@ function MessageBubble({ message, onOrder, onProductClick, onOptionClick }: { me
               <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce delay-200" />
             </div>
           </div>
+        ) : message.statusMessage && !message.content && !message.narrativeProducts ? (
+          <div className="bg-gray-100 px-4 py-3 rounded-2xl rounded-bl-sm">
+            <div className="flex items-center gap-2 text-sm text-gray-500">
+              <span className="w-2 h-2 bg-blue-400 rounded-full animate-pulse" />
+              {message.statusMessage}
+            </div>
+          </div>
         ) : (
           <>
             {message.toolCalls && message.toolCalls.length > 0 && (
               <ToolCallBubble toolCalls={message.toolCalls} />
             )}
-            {message.responseType === "comparison_table" && message.responseData ? (
+            {message.narrativeProducts && message.narrativeProducts.length > 0 ? (
+              <NarrativeRenderer
+                message={message}
+                onOrder={onOrder}
+                onProductClick={onProductClick}
+              />
+            ) : message.responseType === "comparison_table" && message.responseData ? (
               <>
                 <ComparisonTable data={message.responseData as unknown as ComparisonData} />
                 {message.content && (
-                  <div className="bg-gray-100 px-4 py-3 rounded-2xl rounded-bl-sm text-sm leading-relaxed text-gray-600">
-                    {message.content}
-                  </div>
+                  <StreamingContent
+                    content={message.content}
+                    isStreaming={message.isStreaming}
+                    className="bg-gray-100 px-4 py-3 rounded-2xl rounded-bl-sm text-sm leading-relaxed text-gray-600"
+                  />
                 )}
               </>
             ) : message.recommendations && message.recommendations.length > 0 && message.products ? (
@@ -143,18 +238,22 @@ function MessageBubble({ message, onOrder, onProductClick, onOptionClick }: { me
                 })}
                 {/* Summary text after all recommendations */}
                 {message.content && (
-                  <div className="bg-gray-100 px-4 py-3 rounded-2xl rounded-bl-sm text-sm leading-relaxed text-gray-600">
-                    {message.content}
-                  </div>
+                  <StreamingContent
+                    content={message.content}
+                    isStreaming={message.isStreaming}
+                    className="bg-gray-100 px-4 py-3 rounded-2xl rounded-bl-sm text-sm leading-relaxed text-gray-600"
+                  />
                 )}
               </>
             ) : (
               <>
                 {/* Fallback: content first, then product grid */}
                 {message.content && (
-                  <div className="bg-gray-100 px-4 py-3 rounded-2xl rounded-bl-sm whitespace-pre-wrap text-sm leading-relaxed">
-                    {message.content}
-                  </div>
+                  <StreamingContent
+                    content={message.content}
+                    isStreaming={message.isStreaming}
+                    className="bg-gray-100 px-4 py-3 rounded-2xl rounded-bl-sm whitespace-pre-wrap text-sm leading-relaxed"
+                  />
                 )}
                 {message.products && message.products.length > 0 && (
                   <div className="grid gap-2">

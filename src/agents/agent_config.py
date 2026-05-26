@@ -86,3 +86,45 @@ def get_tool_schemas_for_agent(agent_name: str) -> list[dict]:
 def resolve_agent(user_goal: str) -> str:
     """Resolve user_goal to agent name. Deterministic, no LLM."""
     return INTENT_TO_AGENT.get(user_goal, _DEFAULT_AGENT)
+
+
+def resolve_agents(user_goals: list[str]) -> list[str]:
+    """Resolve multiple user_goals to agent names. Deduplicated, order preserved."""
+    seen = set()
+    agents = []
+    for goal in user_goals:
+        name = INTENT_TO_AGENT.get(goal, _DEFAULT_AGENT)
+        if name not in seen:
+            seen.add(name)
+            agents.append(name)
+    return agents
+
+
+def merge_agent_configs(agent_names: list[str]) -> AgentConfig:
+    """Merge multiple agent configs: union tools, max of max_iterations.
+
+    For single agent, returns its own config.
+    For multiple agents, picks the first agent's name/prompt context,
+    unions all tools, and takes the max max_iterations.
+    response_type follows the primary (first) agent.
+    """
+    if len(agent_names) == 1:
+        return get_agent_config(agent_names[0])
+
+    configs = [get_agent_config(n) for n in agent_names]
+
+    # Union tools, preserve order
+    seen_tools = set()
+    merged_tools = []
+    for cfg in configs:
+        for t in cfg.tools:
+            if t not in seen_tools:
+                seen_tools.add(t)
+                merged_tools.append(t)
+
+    return AgentConfig(
+        name=configs[0].name,
+        tools=merged_tools,
+        max_iterations=max(c.max_iterations for c in configs),
+        response_type=configs[0].response_type,
+    )

@@ -29,6 +29,13 @@ export interface ChatMessage {
   responseType?: string;
   responseData?: Record<string, unknown>;
   isLoading?: boolean;
+  isStreaming?: boolean;
+  // Narrative streaming fields
+  narrativeProducts?: Product[];
+  visibleProductIds?: string[];
+  introTexts?: Record<string, string>;
+  summaryText?: string;
+  statusMessage?: string;
 }
 
 export interface Product {
@@ -70,13 +77,15 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [pendingOrder, setPendingOrder] = useState<Record<string, unknown> | null>(null);
-  const sessionIdRef = useRef(sessionId || crypto.randomUUID());
+  const sessionIdRef = useRef(sessionId || (typeof window !== "undefined" ? crypto.randomUUID() : ""));
   const userIdRef = useRef(
-    localStorage.getItem("shopping_user_id") || (() => {
-      const id = crypto.randomUUID();
-      localStorage.setItem("shopping_user_id", id);
-      return id;
-    })()
+    typeof window !== "undefined"
+      ? (localStorage.getItem("shopping_user_id") || (() => {
+          const id = crypto.randomUUID();
+          localStorage.setItem("shopping_user_id", id);
+          return id;
+        })())
+      : ""
   );
 
   const sendMessage = useCallback(async (text: string, displayText?: string) => {
@@ -119,6 +128,14 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
       let currentToolCalls: ToolCall[] = [];
       let currentResponseType: string | undefined;
       let currentResponseData: Record<string, unknown> | undefined;
+      // Narrative streaming state
+      let narrativeProducts: Product[] = [];
+      let visibleProductIds: string[] = [];
+      let introTexts: Record<string, string> = {};
+      let summaryText = "";
+      let streamingPhase: "intro" | "summary" | "" = "";
+      let currentIntroProductId = "";
+      let currentStatusMessage = "";
 
       while (true) {
         const { done, value } = await reader.read();
@@ -140,6 +157,8 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
               const data = JSON.parse(jsonStr);
               handleSSEEvent(eventType, data, (content) => {
                 currentContent = content;
+              }, (delta) => {
+                currentContent += delta;
               }, (products) => {
                 currentProducts = products;
               }, (recs) => {
@@ -155,6 +174,39 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
               }, (rt, rd) => {
                 currentResponseType = rt;
                 currentResponseData = rd;
+              }, {
+                setNarrativeProducts: (products) => {
+                  narrativeProducts = products;
+                },
+                startIntro: (pid) => {
+                  streamingPhase = "intro";
+                  currentIntroProductId = pid;
+                  if (!introTexts[pid]) introTexts[pid] = "";
+                },
+                appendIntroDelta: (delta) => {
+                  if (currentIntroProductId) {
+                    introTexts[currentIntroProductId] = (introTexts[currentIntroProductId] || "") + delta;
+                  }
+                },
+                showCard: (pid) => {
+                  if (!visibleProductIds.includes(pid)) {
+                    visibleProductIds = [...visibleProductIds, pid];
+                  }
+                },
+                endIntro: () => {
+                  streamingPhase = "";
+                  currentIntroProductId = "";
+                },
+                startSummary: () => {
+                  streamingPhase = "summary";
+                  if (!summaryText) summaryText = "";
+                },
+                appendSummaryDelta: (delta) => {
+                  summaryText += delta;
+                },
+                setStatus: (msg) => {
+                  currentStatusMessage = msg;
+                },
               });
             } catch {
               // Skip malformed JSON
@@ -177,12 +229,28 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
               toolCalls: currentToolCalls.length > 0 ? currentToolCalls : last.toolCalls,
               responseType: currentResponseType || last.responseType,
               responseData: currentResponseData || last.responseData,
+              narrativeProducts: narrativeProducts.length > 0 ? narrativeProducts : last.narrativeProducts,
+              visibleProductIds: visibleProductIds.length > 0 ? visibleProductIds : last.visibleProductIds,
+              introTexts: Object.keys(introTexts).length > 0 ? { ...introTexts } : last.introTexts,
+              summaryText: summaryText || last.summaryText,
+              statusMessage: currentStatusMessage || last.statusMessage,
               isLoading: false,
+              isStreaming: true,
             };
           }
           return updated;
         });
       }
+
+      // Stream finished — clear streaming flag
+      setMessages((prev) => {
+        const updated = [...prev];
+        const last = updated[updated.length - 1];
+        if (last && last.role === "assistant" && last.isStreaming) {
+          updated[updated.length - 1] = { ...last, isStreaming: false };
+        }
+        return updated;
+      });
     } catch (error) {
       setMessages((prev) => {
         const updated = [...prev];
@@ -332,10 +400,22 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
   return { messages, isLoading, sendMessage, startOrder, resumeOrder, reportBehavior, pendingOrder };
 }
 
+interface NarrativeCallbacks {
+  setNarrativeProducts: (products: Product[]) => void;
+  startIntro: (pid: string) => void;
+  appendIntroDelta: (delta: string) => void;
+  showCard: (pid: string) => void;
+  endIntro: () => void;
+  startSummary: () => void;
+  appendSummaryDelta: (delta: string) => void;
+  setStatus: (msg: string) => void;
+}
+
 function handleSSEEvent(
   eventType: string,
   data: Record<string, unknown>,
   setContent: (content: string) => void,
+  appendContent: (delta: string) => void,
   setProducts: (products: Product[]) => void,
   setRecommendations: (recs: Recommendation[]) => void,
   setPendingOrder: (order: Record<string, unknown> | null) => void,
@@ -343,9 +423,15 @@ function handleSSEEvent(
   setQuestions: (questions: ClarificationQuestion[]) => void,
   addToolCall?: (tc: ToolCall) => void,
   setResponseType?: (rt: string | undefined, rd: Record<string, unknown> | undefined) => void,
+  narrative?: NarrativeCallbacks,
 ) {
   switch (eventType) {
     case "intent":
+      break;
+    case "status":
+      if (narrative) {
+        narrative.setStatus(data.message as string || "");
+      }
       break;
     case "tool_call":
       if (addToolCall) {
@@ -366,16 +452,57 @@ function handleSSEEvent(
         setResponseType(data.response_type as string, data.response_data as Record<string, unknown>);
       }
       break;
+    case "card_preload":
+      if (narrative) {
+        narrative.setNarrativeProducts((data.products as Product[]) || []);
+      }
+      break;
+    case "product_intro_start":
+      if (narrative) {
+        narrative.startIntro(data.product_id as string || "");
+      }
+      break;
+    case "text_delta":
+      if (narrative) {
+        narrative.appendIntroDelta((data.delta as string) || "");
+      }
+      break;
+    case "product_card":
+      if (narrative) {
+        narrative.showCard(data.product_id as string || "");
+      }
+      break;
+    case "product_intro_done":
+      if (narrative) {
+        narrative.endIntro();
+      }
+      break;
+    case "summary_start":
+      if (narrative) {
+        narrative.startSummary();
+      }
+      break;
+    case "summary_delta":
+      if (narrative) {
+        narrative.appendSummaryDelta((data.delta as string) || "");
+      }
+      break;
+    case "explanation_delta":
+      appendContent((data.delta as string) || "");
+      break;
     case "explanation":
-      setContent(data.text as string || "");
-      setOptions([]);
-      setQuestions([]);
+      // Compat: only use if no narrative products (non-recommendation path)
+      if (!narrative) {
+        setContent(data.text as string || "");
+        setOptions([]);
+        setQuestions([]);
+      }
       break;
     case "interrupt":
       setPendingOrder(data);
       break;
     case "error":
-      setContent(data.error || "抱歉，处理过程中出现了问题，请稍后再试。");
+      setContent((data.error as string) || "抱歉，处理过程中出现了问题，请稍后再试。");
       break;
   }
 }

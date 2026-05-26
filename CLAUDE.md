@@ -39,6 +39,9 @@ source .venv/Scripts/activate   # Git Bash
 # Run API server
 uvicorn src.api.chat:app --reload --port 8000
 
+# Import mock data to Qdrant (run once after DB setup)
+python -m data.import_data
+
 # Run tests (pytest)
 python -m pytest tests/                    # all tests
 python -m pytest tests/test_scaffold.py    # single file
@@ -50,6 +53,11 @@ python scripts/build_index.py --data data/mock_data.json --collection products
 
 # Generate mock product data
 python scripts/generate_mock_products.py --count 5000 --output data/mock_products_5k.json
+
+# CLI usage
+python main.py "帮我找护肤品"              # single query
+python main.py --stream "帮我找护肤品"     # with streaming output
+python main.py                            # interactive mode
 ```
 
 ### Frontend
@@ -84,6 +92,18 @@ preprocess → react_loop → 成功 → postprocess → END
                     fallback → postprocess → END
 ```
 
+### 多 Agent 架构 (multi_agent_graph.py) — 当前默认模式
+
+```
+preprocess → agent_router → recommend/search/detail/compare/order agent
+    → (continue/end/fallback) → postprocess → END
+```
+
+- `agent_router`: 确定性 if/else 路由（基于 user_goal），无 LLM 调用
+- 每个 Agent 有独立 prompt、tool 子集、max_iterations（配置在 config.yaml `agents` 下）
+- Agent 路由：recommend_agent / search_agent / detail_agent / compare_agent / order_agent
+- API 通过 `mode` 参数切换：`"multi_agent"` (默认) / `"agent"` / `"workflow"`
+
 **确定性预处理层** (graph/preprocessing.py):
 - `node_preprocess`: intent + entity + memory 并行执行，输出到 state
 - 低风险、强结构化，固定执行保证稳定性
@@ -97,6 +117,7 @@ preprocess → react_loop → 成功 → postprocess → END
 | Tool | 文件 | 功能 |
 |------|------|------|
 | product_search | tools/product_search.py | 一站式检索：硬筛+向量+排序 |
+| multi_query_search | tools/multi_query_search.py | 多查询并行检索+去重+重排 |
 | product_detail_batch | tools/product_detail.py | 批量获取商品详情 |
 | price_compare | tools/product_detail.py | 多商品比价 |
 | review_summary | tools/review_tool.py | 评论摘要 |
@@ -138,11 +159,25 @@ Intent samples stored in `data/intent_samples.json`, indexed into Qdrant collect
 
 L2c vector memory: per-user Qdrant collection `memory_{user_id}`. Triggered by reference words (上次/那个/之前) or cross-category jumps. Fire-and-forget writes after each recommendation.
 
+### Behavior Tracking (memory/behavior_tracker.py)
+
+Implicit feedback loop: frontend reports user actions (click/select/reject/dwell) via `POST /api/behavior`. Updates L3 User Profile with EMA price range narrowing and brand preference reinforcement. Non-blocking to main request path.
+
 ### Security (security/)
 
 - Input guard: prompt injection detection (regex), length limit (500 chars), intent whitelist
 - Output guard: filters sensitive info from LLM responses
 - Data guard: PII protection
+
+### Reports (reports/)
+
+Problem reports and architecture plans. Key file: `problem.md` — tracks all bugs found during testing with root cause and fix details. New fixes should be appended here.
+
+### Frontend (frontend/)
+
+- Next.js 14 App Router with React 18, Tailwind CSS, Zustand for state
+- Key dirs: `app/` (pages), `components/` (ChatBox, ProductCard, etc.), `hooks/` (useChatStream SSE hook)
+- SSE client parses events: intent → entities → clarification → results → explanation → done
 
 ## Development Guidelines
 
@@ -162,3 +197,5 @@ L2c vector memory: per-user Qdrant collection `memory_{user_id}`. Triggered by r
 - Execution logs in State (use structlog)
 - Calling sentence_transformers on the main thread (use asyncio.to_thread)
 - Auto-invoking skills unless explicitly requested
+- Modifying or deleting the original shopping_graph.py or agents/ functions
+- Mixing execution logs into State fields (structlog only)

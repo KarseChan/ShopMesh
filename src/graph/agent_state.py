@@ -30,7 +30,8 @@ class AgentState(TypedDict):
     session_summary: str                        # L2b: LLM-compressed older turns
 
     # === Deterministic preprocessing output ===
-    intent: dict                               # Intent classification result {user_goal, task_type, execution_hint}
+    intent: dict                               # Intent classification result {user_goals, task_type, execution_hint}
+    user_goals: list[str]                       # Multi-label intent goals (e.g. ["compare_products", "recommend_product"])
     entities: dict                              # Extracted entities
     memory_chunks: list                         # Recalled memory chunks
     search_plan: dict                           # Search plan from search_planner
@@ -49,7 +50,16 @@ class AgentState(TypedDict):
     # === Clarification state ===
     pending_clarification: dict | None          # Awaiting clarification answer {fields, question_spec, question_type, strategy, entities_snapshot}
 
+    # === Orchestrator DAG ===
+    task_dag: list                              # Task DAG from orchestrator [{task_id, type, depends_on, args}]
+    task_results: dict                          # DAG execution results keyed by task_id
+    task_status: str                            # DAG execution status: "pending" | "running" | "done" | "failed"
+
     # === Multi-Agent routing ===
     active_agent: str                           # Which specialized agent is active (e.g. "recommend_agent")
     response_type: str                          # Frontend rendering hint (e.g. "recommendation_cards")
     response_data: dict                         # Structured response data for frontend (parsed from agent JSON output)
+
+    # === Narrative streaming ===
+    selected_product_ids: list                  # Product IDs selected by agent for narrative streaming
+    stream_narrative: bool                      # Whether to use narrative streaming for response

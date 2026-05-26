@@ -174,10 +174,13 @@ def _format_intent(intent: dict | str) -> str:
         return intent
     if not intent or not isinstance(intent, dict):
         return "未知"
-    user_goal = intent.get("user_goal", "")
+    goals = intent.get("user_goals", [])
+    if not goals:
+        single = intent.get("user_goal", "")
+        goals = [single] if single else []
     task_type = intent.get("task_type", "")
     execution_hint = intent.get("execution_hint", "")
-    return f"{user_goal} / {task_type} / {execution_hint}"
+    return f"{','.join(goals)} / {task_type} / {execution_hint}"
 
 
 def _format_tool_descriptions(tools: list) -> str:

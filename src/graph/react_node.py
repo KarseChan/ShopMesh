@@ -94,6 +94,7 @@ async def node_react_loop(state: dict) -> dict:
         # Try to parse structured recommendations from the response
         recommendations = []
         summary = content  # fallback: treat entire content as summary
+        selected_ids = []
 
         try:
             # Extract JSON from possible code fences
@@ -113,7 +114,13 @@ async def node_react_loop(state: dict) -> dict:
             if isinstance(parsed, dict):
                 # Normalize keys: strip whitespace/newlines/embedded quotes that LLM may inject
                 parsed = {k.strip().strip('"').strip("'").strip(): v for k, v in parsed.items()}
-                if "recommendations" in parsed:
+
+                # New format: agent only outputs selected_product_ids
+                if "selected_product_ids" in parsed:
+                    selected_ids = [pid for pid in parsed["selected_product_ids"] if pid]
+                    logger.info("structured_selection_parsed", count=len(selected_ids))
+                # Old format: agent outputs full recommendations with text
+                elif "recommendations" in parsed:
                     recommendations = parsed["recommendations"]
                     summary = parsed.get("summary", "")
                     logger.info("structured_response_parsed",
@@ -128,6 +135,19 @@ async def node_react_loop(state: dict) -> dict:
             "recommendations": recommendations,
             "iteration": state.get("iteration", 0) + 1,
         }
+
+        # Set narrative streaming flags
+        if selected_ids:
+            result["selected_product_ids"] = selected_ids
+            result["stream_narrative"] = True
+        elif recommendations:
+            for rec in recommendations:
+                pid = rec.get("product_id", "")
+                if pid:
+                    selected_ids.append(pid)
+            if selected_ids:
+                result["selected_product_ids"] = selected_ids
+                result["stream_narrative"] = True
 
         # Check if the last action was ask_clarification with should_ask=true
         # If so, set pending_clarification for the next turn
