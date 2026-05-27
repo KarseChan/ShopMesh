@@ -29,6 +29,7 @@ from src.graph.shopping_agent import run_agent_stream
 from src.graph.shopping_graph import run_shopping_stream
 from src.graph.multi_agent_graph import run_multi_agent_stream
 from src.memory.behavior_tracker import BehaviorSignal, process_signal
+from src.memory.conversation_store import get_conversations, get_messages
 from src.security.input_guard import InputViolation, validate_input
 
 app = FastAPI(title="ShoppingAgent API")
@@ -221,3 +222,19 @@ async def report_behavior(request: Request):
     )
     await process_signal(signal)
     return {"status": "ok"}
+
+
+@app.get("/api/conversations")
+async def list_conversations(user_id: str, limit: int = 20):
+    """List conversations for a user, ordered by most recent activity."""
+    import asyncio
+    conversations = await asyncio.to_thread(get_conversations, user_id, limit)
+    return {"conversations": conversations}
+
+
+@app.get("/api/conversations/{conversation_id}/messages")
+async def list_messages(conversation_id: str, user_id: str, limit: int = 50):
+    """Get messages for a conversation."""
+    import asyncio
+    messages = await asyncio.to_thread(get_messages, user_id, conversation_id, limit)
+    return {"messages": messages}

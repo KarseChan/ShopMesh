@@ -15,6 +15,7 @@ import asyncio
 import json
 import re
 
+from src.memory.conversation_store import save_message
 from src.memory.memory_retriever import write_chunk, write_chunk_with_contradiction_awareness
 from src.memory.session_memory import get_session_memory
 from src.memory.user_profile import update_profile_from_preference
@@ -185,6 +186,10 @@ async def node_postprocess(state: dict) -> dict:
     # ---- L2a: Write sliding window (sync, Redis RPUSH < 1ms) ----
     session_mem = get_session_memory(session_id)
     await session_mem.add_turn(user_input, response)
+
+    # ---- Persistent conversation storage (async, PostgreSQL) ----
+    asyncio.create_task(asyncio.to_thread(save_message, user_id, session_id, "user", user_input))
+    asyncio.create_task(asyncio.to_thread(save_message, user_id, session_id, "assistant", response))
 
     # ---- L2b: Trim evicted turns to summary (async, LLM 1~3s) ----
     asyncio.create_task(session_mem.trim())

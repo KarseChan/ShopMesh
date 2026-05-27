@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 
 export interface SSEEvent {
   event: string;
@@ -69,6 +69,7 @@ export interface UseChatStreamReturn {
   resumeOrder: (confirmed: boolean) => Promise<void>;
   reportBehavior: (action: string, product: Product) => void;
   pendingOrder: Record<string, unknown> | null;
+  newConversation: () => void;
 }
 
 const API_BASE = "";
@@ -77,7 +78,15 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [pendingOrder, setPendingOrder] = useState<Record<string, unknown> | null>(null);
-  const sessionIdRef = useRef(sessionId || (typeof window !== "undefined" ? crypto.randomUUID() : ""));
+  const sessionIdRef = useRef(
+    sessionId || (typeof window !== "undefined"
+      ? (localStorage.getItem("shopping_session_id") || (() => {
+          const id = crypto.randomUUID();
+          localStorage.setItem("shopping_session_id", id);
+          return id;
+        })())
+      : "")
+  );
   const userIdRef = useRef(
     typeof window !== "undefined"
       ? (localStorage.getItem("shopping_user_id") || (() => {
@@ -87,6 +96,24 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
         })())
       : ""
   );
+
+  // Load conversation history on mount
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const sid = sessionIdRef.current;
+    const uid = userIdRef.current;
+    if (!sid || !uid) return;
+
+    fetch(`${API_BASE}/api/conversations/${sid}/messages?user_id=${encodeURIComponent(uid)}&limit=50`)
+      .then((res) => res.json())
+      .then((data) => {
+        const msgs = data.messages as { role: string; content: string }[];
+        if (msgs && msgs.length > 0) {
+          setMessages(msgs.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })));
+        }
+      })
+      .catch(() => {}); // silently ignore on first load
+  }, []);
 
   const sendMessage = useCallback(async (text: string, displayText?: string) => {
     if (!text.trim() || isLoading) return;
@@ -380,6 +407,15 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
     }
   }, []);
 
+  const newConversation = useCallback(() => {
+    const newId = crypto.randomUUID();
+    sessionIdRef.current = newId;
+    if (typeof window !== "undefined") {
+      localStorage.setItem("shopping_session_id", newId);
+    }
+    setMessages([]);
+  }, []);
+
   const reportBehavior = useCallback((action: string, product: Product) => {
     // Fire-and-forget: non-blocking POST to behavior endpoint
     fetch(`${API_BASE}/api/behavior`, {
@@ -397,7 +433,7 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
     }).catch(() => {}); // silently ignore failures
   }, []);
 
-  return { messages, isLoading, sendMessage, startOrder, resumeOrder, reportBehavior, pendingOrder };
+  return { messages, isLoading, sendMessage, startOrder, resumeOrder, reportBehavior, pendingOrder, newConversation };
 }
 
 interface NarrativeCallbacks {

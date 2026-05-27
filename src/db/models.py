@@ -71,3 +71,14 @@ class IntentSample(SQLModel, table=True):
     text: str
     source: str = "manual"  # manual / auto_learned
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ConversationMessage(SQLModel, table=True):
+    __tablename__ = "conversation_messages"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    conversation_id: str = Field(index=True)
+    user_id: str = Field(index=True)
+    role: str  # "user" / "assistant"
+    content: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
