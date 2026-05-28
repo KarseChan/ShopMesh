@@ -33,11 +33,13 @@ from src.memory.conversation_store import get_conversations, get_messages
 from src.security.input_guard import InputViolation, validate_input
 
 from src.auth.router import router as auth_router
+from src.auth.middleware import TenantMiddleware
 
 app = FastAPI(title="ShoppingAgent API")
 
 app.include_router(auth_router)
 
+app.add_middleware(TenantMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

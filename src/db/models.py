@@ -41,6 +41,7 @@ class UserProfile(SQLModel, table=True):
     __tablename__ = "user_profiles"
 
     id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(index=True, default="")
     user_id: str = Field(index=True)
     category: str = Field(index=True)  # per-category profile
     price_sensitivity: float = 0.5
@@ -57,6 +58,7 @@ class SessionRecord(SQLModel, table=True):
     __tablename__ = "sessions"
 
     id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(index=True, default="")
     session_id: str = Field(index=True, unique=True)
     user_id: str = Field(index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)
@@ -66,6 +68,7 @@ class Order(SQLModel, table=True):
     __tablename__ = "orders"
 
     id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(index=True, default="")
     order_id: str = Field(index=True, unique=True)
     session_id: str = Field(index=True)
     user_id: str = Field(index=True)
@@ -90,6 +93,7 @@ class ConversationMessage(SQLModel, table=True):
     __tablename__ = "conversation_messages"
 
     id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(index=True, default="")
     conversation_id: str = Field(index=True)
     user_id: str = Field(index=True)
     role: str  # "user" / "assistant"

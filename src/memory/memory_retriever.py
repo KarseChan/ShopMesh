@@ -12,6 +12,7 @@ import hashlib
 import math
 import time
 
+from src.auth.context import get_tenant_id
 from src.models.embedder import get_embedder
 from src.observability.logger import get_logger
 from src.retrieval.vector_store import get_vector_store
@@ -51,6 +52,7 @@ async def _ensure_collection() -> str:
     try:
         await store.create_collection(MEMORY_COLLECTION, DIMENSIONS)
         # Create payload indexes for efficient filtering
+        await store.create_payload_index(MEMORY_COLLECTION, "tenant_id", "keyword")
         await store.create_payload_index(MEMORY_COLLECTION, "user_id", "keyword")
         await store.create_payload_index(MEMORY_COLLECTION, "timestamp", "float")
         await store.create_payload_index(MEMORY_COLLECTION, "category", "keyword")
@@ -94,6 +96,7 @@ async def write_chunk(
 
     # Payload for filtering and display
     payload = {
+        "tenant_id": get_tenant_id(),
         "user_id": user_id,
         "user_input": user_input,
         "assistant_output": assistant_output,
@@ -247,6 +250,9 @@ async def should_recall_dual(
         store = get_vector_store()
 
         filters = {"user_id": user_id}
+        tenant_id = get_tenant_id()
+        if tenant_id:
+            filters["tenant_id"] = tenant_id
         results = await store.search(MEMORY_COLLECTION, query_vector, limit=1, filters=filters)
 
         if results and results[0].get("score", 0) >= semantic_threshold:
@@ -278,8 +284,11 @@ async def recall(
     k = top_k or RECALL_TOP_K
     query_vector = await embedder.aembed(query)
 
-    # Payload filter: user_id is required, category is optional
+    # Payload filter: tenant_id + user_id required, category optional
+    tenant_id = get_tenant_id()
     filters = {"user_id": user_id}
+    if tenant_id:
+        filters["tenant_id"] = tenant_id
     if category:
         filters["category"] = category
 

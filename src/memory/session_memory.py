@@ -4,12 +4,13 @@ L2a: Recent N turns stored as a Redis List.
 L2b: Older turns compressed into a summary string.
 
 Storage keys:
-    session:{session_id}:messages  — List of JSON-encoded messages (L2a)
-    session:{session_id}:summary   — Compressed summary string (L2b)
+    tenant:{tenant_id}:session:{session_id}:messages  — List of JSON-encoded messages (L2a)
+    tenant:{tenant_id}:session:{session_id}:summary   — Compressed summary string (L2b)
 """
 
 import json
 
+from src.auth.context import get_tenant_id
 from src.db.redis_client import get_redis
 from src.memory.compressor import compress
 from src.observability.logger import get_logger
@@ -18,8 +19,8 @@ from src.config import config
 logger = get_logger("session_memory")
 
 WINDOW_SIZE: int = config.get("memory", {}).get("sliding_window_rounds", 5)
-MSG_KEY = "session:{sid}:messages"
-SUMMARY_KEY = "session:{sid}:summary"
+MSG_KEY = "tenant:{tid}:session:{sid}:messages"
+SUMMARY_KEY = "tenant:{tid}:session:{sid}:summary"
 MSG_TTL = 3600 * 24  # 24 hours
 
 # Lua script: atomically verify head → LTRIM + SET summary
@@ -59,15 +60,16 @@ return 1
 class SessionMemory:
     """Per-session memory backed by Redis."""
 
-    def __init__(self, session_id: str):
+    def __init__(self, session_id: str, tenant_id: str = ""):
         self.session_id = session_id
+        self.tenant_id = tenant_id or get_tenant_id()
         self._redis = get_redis()
 
     def _msg_key(self) -> str:
-        return MSG_KEY.format(sid=self.session_id)
+        return MSG_KEY.format(tid=self.tenant_id, sid=self.session_id)
 
     def _summary_key(self) -> str:
-        return SUMMARY_KEY.format(sid=self.session_id)
+        return SUMMARY_KEY.format(tid=self.tenant_id, sid=self.session_id)
 
     async def add_turn(self, user_msg: str, assistant_msg: str) -> None:
         """Append a conversation turn (user + assistant) to the window."""
@@ -156,6 +158,6 @@ class SessionMemory:
         await self._redis.delete(self._msg_key(), self._summary_key())
 
 
-def get_session_memory(session_id: str) -> SessionMemory:
+def get_session_memory(session_id: str, tenant_id: str = "") -> SessionMemory:
     """Factory for SessionMemory."""
-    return SessionMemory(session_id)
+    return SessionMemory(session_id, tenant_id=tenant_id)
