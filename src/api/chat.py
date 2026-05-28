@@ -32,7 +32,11 @@ from src.memory.behavior_tracker import BehaviorSignal, process_signal
 from src.memory.conversation_store import get_conversations, get_messages
 from src.security.input_guard import InputViolation, validate_input
 
+from src.auth.router import router as auth_router
+
 app = FastAPI(title="ShoppingAgent API")
+
+app.include_router(auth_router)
 
 app.add_middleware(
     CORSMiddleware,

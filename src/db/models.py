@@ -1,9 +1,22 @@
-"""SQLModel data models — Product / UserProfile / Session / Order / IntentSample."""
+"""SQLModel data models — User / Product / UserProfile / Session / Order / IntentSample."""
 
 from datetime import datetime
 from typing import Optional
 
 from sqlmodel import SQLModel, Field
+
+
+class User(SQLModel, table=True):
+    __tablename__ = "users"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: str = Field(index=True, unique=True)
+    username: str = Field(index=True, unique=True)
+    hashed_password: str
+    email: Optional[str] = None
+    tenant_id: str = Field(index=True)
+    is_active: bool = True
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class Product(SQLModel, table=True):
