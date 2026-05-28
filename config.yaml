@@ -40,36 +40,23 @@ database:
 # Router
 router:
   routes:
-    search: search_agent
-    compare: compare_agent
-    recommend: recommend_agent
-    detail: detail_agent
-    order: order_agent
-  fallback: general_agent
+    search: search_recommend_agent
+    compare: detail_compare_agent
+    recommend: search_recommend_agent
+    detail: detail_compare_agent
+  fallback: search_recommend_agent
   semantic_threshold: 0.80
 
 # Multi-Agent configs
 agents:
-  recommend_agent:
+  search_recommend_agent:
     max_iterations: 5
     response_type: recommendation_cards
     tools: [product_search, multi_query_search, ask_clarification, constraint_relaxation, review_summary]
-  search_agent:
-    max_iterations: 4
-    response_type: product_grid
-    tools: [product_search, constraint_relaxation, ask_clarification, review_summary]
-  detail_agent:
-    max_iterations: 5
-    response_type: detail_card
-    tools: [product_search, product_detail_batch, review_summary]
-  compare_agent:
+  detail_compare_agent:
     max_iterations: 6
     response_type: comparison_table
     tools: [product_search, product_detail_batch, price_compare, review_summary]
-  order_agent:
-    max_iterations: 1
-    response_type: order_confirmation
-    tools: []
 
 # Memory
 memory:

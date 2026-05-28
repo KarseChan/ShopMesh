@@ -48,25 +48,25 @@ TASK_TEMPLATES: dict[str, TaskTemplate] = {
     "compare": TaskTemplate(
         task_id="compare",
         type="agent",
-        agent="compare_agent",
+        agent="detail_compare_agent",
         description="对比多个商品，输出对比表和结论",
     ),
     "recommend": TaskTemplate(
         task_id="recommend",
         type="agent",
-        agent="recommend_agent",
+        agent="search_recommend_agent",
         description="综合推荐，基于搜索结果、比价、对比等信息给出最终推荐",
     ),
     "detail": TaskTemplate(
         task_id="detail",
         type="agent",
-        agent="detail_agent",
+        agent="detail_compare_agent",
         description="查看单个商品的详细信息和评价",
     ),
     "search": TaskTemplate(
         task_id="search",
         type="agent",
-        agent="search_agent",
+        agent="search_recommend_agent",
         description="搜索商品，返回结果列表",
     ),
     "review": TaskTemplate(

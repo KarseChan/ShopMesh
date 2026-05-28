@@ -25,15 +25,18 @@ class AgentConfig:
 
 
 # user_goal → agent_name mapping
+# place_order is handled as a hardcoded branch in agent_router, not as an agent
+_ORDER_PLACEHOLDER = "__order_hardcoded__"
+
 INTENT_TO_AGENT: dict[str, str] = {
-    "recommend_product": "recommend_agent",
-    "find_product": "search_agent",
-    "compare_products": "compare_agent",
-    "view_detail": "detail_agent",
-    "place_order": "order_agent",
+    "recommend_product": "search_recommend_agent",
+    "find_product": "search_recommend_agent",
+    "compare_products": "detail_compare_agent",
+    "view_detail": "detail_compare_agent",
+    "place_order": _ORDER_PLACEHOLDER,
 }
 
-_DEFAULT_AGENT = "recommend_agent"
+_DEFAULT_AGENT = "search_recommend_agent"
 
 
 def _load_agent_configs() -> dict[str, AgentConfig]:
@@ -47,9 +50,9 @@ def _load_agent_configs() -> dict[str, AgentConfig]:
             max_iterations=cfg.get("max_iterations", 5),
             response_type=cfg.get("response_type", "recommendation_cards"),
         )
-    # Ensure all mapped agents exist even if not in config
+    # Ensure all mapped agents exist even if not in config (skip order placeholder)
     for agent_name in INTENT_TO_AGENT.values():
-        if agent_name not in configs:
+        if agent_name != _ORDER_PLACEHOLDER and agent_name not in configs:
             configs[agent_name] = AgentConfig(name=agent_name)
     return configs
 
@@ -66,7 +69,7 @@ def get_agent_configs() -> dict[str, AgentConfig]:
 
 
 def get_agent_config(agent_name: str) -> AgentConfig:
-    """Get config for a specific agent. Falls back to recommend_agent."""
+    """Get config for a specific agent. Falls back to search_recommend_agent."""
     configs = get_agent_configs()
     return configs.get(agent_name, configs.get(_DEFAULT_AGENT, AgentConfig(name=agent_name)))
 
@@ -89,15 +92,25 @@ def resolve_agent(user_goal: str) -> str:
 
 
 def resolve_agents(user_goals: list[str]) -> list[str]:
-    """Resolve multiple user_goals to agent names. Deduplicated, order preserved."""
+    """Resolve multiple user_goals to agent names. Deduplicated, order preserved.
+
+    Skips the order placeholder — place_order is handled by agent_router directly.
+    """
     seen = set()
     agents = []
     for goal in user_goals:
         name = INTENT_TO_AGENT.get(goal, _DEFAULT_AGENT)
+        if name == _ORDER_PLACEHOLDER:
+            continue
         if name not in seen:
             seen.add(name)
             agents.append(name)
     return agents
+
+
+def is_order_intent(user_goals: list[str]) -> bool:
+    """Check if any user goal is a place_order intent."""
+    return any(g == "place_order" for g in user_goals)
 
 
 def merge_agent_configs(agent_names: list[str]) -> AgentConfig:

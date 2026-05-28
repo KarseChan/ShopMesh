@@ -17,7 +17,7 @@ logger = get_logger("stream_utils")
 
 # Agent node names that produce search results
 _AGENT_NODES = frozenset({
-    "recommend_agent", "search_agent", "detail_agent", "compare_agent",
+    "search_recommend_agent", "detail_compare_agent",
     "react_loop",
 })
 

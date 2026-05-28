@@ -406,15 +406,12 @@ def _fallback_dag(user_goals: list[str], state: dict) -> list[dict]:
     from src.agents.agent_config import resolve_agents
 
     agent_names = resolve_agents(user_goals)
-    primary = agent_names[0] if agent_names else "recommend_agent"
+    primary = agent_names[0] if agent_names else "search_recommend_agent"
 
     # Map agent name to task template
     agent_to_task = {
-        "recommend_agent": "recommend",
-        "search_agent": "search",
-        "detail_agent": "detail",
-        "compare_agent": "compare",
-        "order_agent": "recommend",  # fallback
+        "search_recommend_agent": "recommend",
+        "detail_compare_agent": "compare",
     }
     task_id = agent_to_task.get(primary, "recommend")
 

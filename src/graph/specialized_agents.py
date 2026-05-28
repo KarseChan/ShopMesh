@@ -2,7 +2,8 @@
 
 Contains:
 - node_agent_router: deterministic routing based on intent
-- node_recommend_agent, node_search_agent, node_detail_agent, node_compare_agent, node_order_agent
+- node_search_recommend_agent: unified search + recommendation agent
+- node_detail_compare_agent: unified detail + comparison agent
 - _run_agent_loop: shared ReAct loop parameterized by agent config
 - Schema validation + repair for structured JSON output
 """
@@ -11,8 +12,10 @@ import json
 import re
 
 from src.agents.agent_config import (
+    _ORDER_PLACEHOLDER,
     get_agent_config,
     get_tool_schemas_for_agent,
+    is_order_intent,
     merge_agent_configs,
     resolve_agent,
     resolve_agents,
@@ -37,6 +40,7 @@ async def node_agent_router(state: dict) -> dict:
 
     Supports multi-label: when user_goals contains multiple intents, merges
     agent capabilities (union tools, max iterations, primary agent's prompt).
+    Handles place_order as a hardcoded branch (no ReAct loop).
     """
     intent = state.get("intent", {})
     user_goals = state.get("user_goals", [])
@@ -54,6 +58,18 @@ async def node_agent_router(state: dict) -> dict:
                     user_goals = [single]
         if not user_goals:
             user_goals = ["recommend_product"]
+
+    # Handle place_order as hardcoded branch
+    if is_order_intent(user_goals):
+        logger.info("agent_routed_order", user_goals=user_goals)
+        return {
+            "active_agent": "__order__",
+            "max_iterations": 1,
+            "response_type": "order_confirmation",
+            "final_response": "请确认是否下单。如需下单，请通过订单页面完成。",
+            "recommendations": [],
+            "iteration": 1,
+        }
 
     agent_names = resolve_agents(user_goals)
     cfg = merge_agent_configs(agent_names)
@@ -76,7 +92,11 @@ async def node_agent_router(state: dict) -> dict:
 
 def route_to_agent(state: dict) -> str:
     """Return the graph node name for the active agent. Used in conditional edges."""
-    return state.get("active_agent", "recommend_agent")
+    active = state.get("active_agent", "search_recommend_agent")
+    # Order is handled as hardcoded branch — route to postprocess
+    if active == "__order__":
+        return "__order__"
+    return active
 
 
 # ──────────────────────────────────────────────
@@ -103,15 +123,11 @@ def _register_prompt_builders():
     """Lazy-register prompt builder functions."""
     if _PROMPT_BUILDERS:
         return
-    from src.agents.prompts.recommend_prompt import build_system_prompt as recommend_prompt
-    from src.agents.prompts.search_prompt import build_system_prompt as search_prompt
-    from src.agents.prompts.detail_prompt import build_system_prompt as detail_prompt
-    from src.agents.prompts.compare_prompt import build_system_prompt as compare_prompt
+    from src.agents.prompts.search_recommend_prompt import build_system_prompt as search_recommend_prompt
+    from src.agents.prompts.detail_compare_prompt import build_system_prompt as detail_compare_prompt
 
-    _PROMPT_BUILDERS["recommend_agent"] = recommend_prompt
-    _PROMPT_BUILDERS["search_agent"] = search_prompt
-    _PROMPT_BUILDERS["detail_agent"] = detail_prompt
-    _PROMPT_BUILDERS["compare_agent"] = compare_prompt
+    _PROMPT_BUILDERS["search_recommend_agent"] = search_recommend_prompt
+    _PROMPT_BUILDERS["detail_compare_agent"] = detail_compare_prompt
 
 
 # ──────────────────────────────────────────────
@@ -380,30 +396,14 @@ async def _run_agent_loop(state: dict, agent_name: str) -> dict:
 # Specialized Agent Node Wrappers
 # ──────────────────────────────────────────────
 
-async def node_recommend_agent(state: dict) -> dict:
-    return await _run_agent_loop(state, "recommend_agent")
+async def node_search_recommend_agent(state: dict) -> dict:
+    """Unified search + recommendation agent."""
+    return await _run_agent_loop(state, "search_recommend_agent")
 
 
-async def node_search_agent(state: dict) -> dict:
-    return await _run_agent_loop(state, "search_agent")
-
-
-async def node_detail_agent(state: dict) -> dict:
-    return await _run_agent_loop(state, "detail_agent")
-
-
-async def node_compare_agent(state: dict) -> dict:
-    return await _run_agent_loop(state, "compare_agent")
-
-
-async def node_order_agent(state: dict) -> dict:
-    """Order agent: minimal, no ReAct loop. Generates confirmation message."""
-    return {
-        "final_response": "请确认是否下单。如需下单，请通过订单页面完成。",
-        "recommendations": [],
-        "response_type": "order_confirmation",
-        "iteration": 1,
-    }
+async def node_detail_compare_agent(state: dict) -> dict:
+    """Unified detail + comparison agent."""
+    return await _run_agent_loop(state, "detail_compare_agent")
 
 
 # ──────────────────────────────────────────────
@@ -430,3 +430,10 @@ def should_continue(state: dict) -> str:
             return "fallback"
 
     return "continue"
+
+
+def route_after_agent(state: dict) -> str:
+    """Route after agent node: order goes to postprocess, others use should_continue."""
+    if state.get("active_agent") == "__order__":
+        return "end"
+    return should_continue(state)

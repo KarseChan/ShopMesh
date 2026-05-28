@@ -4,7 +4,7 @@ Flow (new Orchestrator DAG path):
     preprocess → orchestrator → dag_executor → postprocess → END
 
 Flow (legacy path, preserved as fallback):
-    preprocess → agent_router → recommend/search/detail/compare/order agent
+    preprocess → agent_router → search_recommend/detail_compare agent
         → (continue/end/fallback) → postprocess → END
 
 Each agent has its own prompt, tool subset, and max_iterations.
@@ -29,11 +29,8 @@ from src.graph.postprocessing import node_postprocess
 from src.graph.preprocessing import node_preprocess
 from src.graph.specialized_agents import (
     node_agent_router,
-    node_compare_agent,
-    node_detail_agent,
-    node_order_agent,
-    node_recommend_agent,
-    node_search_agent,
+    node_detail_compare_agent,
+    node_search_recommend_agent,
     route_to_agent,
     should_continue,
 )
@@ -63,7 +60,7 @@ def build_multi_agent_graph(use_orchestrator: bool = True):
         preprocess → orchestrator → dag_executor → postprocess → END
 
     When use_orchestrator=False, uses the legacy path:
-        preprocess → agent_router → agent → should_continue → postprocess → END
+        preprocess → agent_router → search_recommend/detail_compare → should_continue → postprocess → END
 
     Both paths share preprocessing and postprocessing.
     """
@@ -88,35 +85,29 @@ def build_multi_agent_graph(use_orchestrator: bool = True):
         # === Legacy path (preserved as fallback) ===
         graph.add_node("agent_router", node_agent_router)
         graph.add_node("fallback", node_fallback)
-        graph.add_node("recommend_agent", node_recommend_agent)
-        graph.add_node("search_agent", node_search_agent)
-        graph.add_node("detail_agent", node_detail_agent)
-        graph.add_node("compare_agent", node_compare_agent)
-        graph.add_node("order_agent", node_order_agent)
+        graph.add_node("search_recommend_agent", node_search_recommend_agent)
+        graph.add_node("detail_compare_agent", node_detail_compare_agent)
 
         # Entry: preprocess → router
         graph.set_entry_point("preprocess")
         graph.add_edge("preprocess", "agent_router")
 
         # Router → agent (deterministic conditional)
+        # __order__ is handled by agent_router directly (sets final_response),
+        # so route_to_agent returns "end" for it — skip agent nodes entirely.
         graph.add_conditional_edges("agent_router", route_to_agent, {
-            "recommend_agent": "recommend_agent",
-            "search_agent": "search_agent",
-            "detail_agent": "detail_agent",
-            "compare_agent": "compare_agent",
-            "order_agent": "order_agent",
+            "search_recommend_agent": "search_recommend_agent",
+            "detail_compare_agent": "detail_compare_agent",
+            "__order__": "postprocess",
         })
 
         # Each agent → should_continue → self / postprocess / fallback
-        for agent_node in ("recommend_agent", "search_agent", "detail_agent", "compare_agent"):
+        for agent_node in ("search_recommend_agent", "detail_compare_agent"):
             graph.add_conditional_edges(agent_node, should_continue, {
                 "continue": agent_node,
                 "end": "postprocess",
                 "fallback": "fallback",
             })
-
-        # Order agent → postprocess directly (no loop)
-        graph.add_edge("order_agent", "postprocess")
 
         # Fallback → postprocess
         graph.add_edge("fallback", "postprocess")
@@ -218,7 +209,7 @@ async def run_multi_agent_stream(
                         "message": f"已完成 {completed}/{len(task_results)} 个任务",
                     }}
 
-                elif node_name in ("recommend_agent", "search_agent", "detail_agent", "compare_agent", "order_agent"):
+                elif node_name in ("search_recommend_agent", "detail_compare_agent"):
                     tool_log = output.get("tool_calls_log", [])
                     if tool_log:
                         latest = tool_log[-1]

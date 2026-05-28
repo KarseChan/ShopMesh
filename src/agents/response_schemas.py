@@ -87,11 +87,19 @@ RESPONSE_SCHEMAS: dict[str, type[BaseModel]] = {
     "comparison_table": ComparisonTableResponse,
 }
 
+# Agent → possible response types (for agents that support multiple output formats)
+AGENT_RESPONSE_TYPES: dict[str, list[str]] = {
+    "search_recommend_agent": ["recommendation_cards", "product_grid"],
+    "detail_compare_agent": ["detail_card", "comparison_table"],
+}
+
 
 def parse_response_json(raw_text: str, response_type: str) -> dict | None:
     """Extract and validate JSON from LLM output.
 
     Returns parsed dict if valid, None if parse or validation fails.
+    The LLM may output any of the agent's supported response types —
+    we validate against the declared type first, then try alternatives.
     """
     # Extract JSON from possible code fences
     json_str = raw_text
@@ -112,22 +120,33 @@ def parse_response_json(raw_text: str, response_type: str) -> dict | None:
     except (json.JSONDecodeError, IndexError):
         return None
 
-    # Validate against schema if available
-    schema = RESPONSE_SCHEMAS.get(response_type)
-    if schema:
-        try:
-            schema.model_validate(parsed)
-        except ValidationError:
-            # Fallback: try SelectionResponse for recommendation_cards
-            if response_type == "recommendation_cards":
-                try:
-                    SelectionResponse.model_validate(parsed)
-                except ValidationError:
-                    return None
-            else:
-                return None
+    # Determine which response types to try
+    types_to_try = [response_type]
+    # If this agent supports multiple types, add them as fallbacks
+    for agent, rtypes in AGENT_RESPONSE_TYPES.items():
+        if response_type in rtypes:
+            types_to_try = rtypes
+            break
 
-    return parsed
+    # Try each type
+    for rtype in types_to_try:
+        schema = RESPONSE_SCHEMAS.get(rtype)
+        if schema:
+            try:
+                schema.model_validate(parsed)
+                return parsed
+            except ValidationError:
+                continue
+
+    # Last resort: try SelectionResponse for recommendation_cards
+    if "selected_product_ids" in raw_text:
+        try:
+            SelectionResponse.model_validate(parsed)
+            return parsed
+        except ValidationError:
+            pass
+
+    return None
 
 
 def build_repair_prompt(raw_text: str, response_type: str, error: str) -> str:
