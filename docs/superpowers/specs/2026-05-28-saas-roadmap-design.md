@@ -20,8 +20,9 @@
 ### 学什么
 - JWT 认证流程（access_token + refresh_token）
 - OAuth2 密码模式（FastAPI 内置支持）
+- RBAC 角色权限模型（Role-Based Access Control）
 - 多租户数据隔离模式（shared DB + tenant_id vs schema-per-tenant）
-- FastAPI 依赖注入（Depends）做租户上下文传播
+- FastAPI 依赖注入（Depends）做租户上下文和权限传播
 - Alembic 数据库迁移管理
 
 ### 做什么
@@ -30,21 +31,28 @@
    - 用户注册/登录 API（`POST /api/auth/register`, `POST /api/auth/login`）
    - 密码哈希（bcrypt via passlib）
    - `get_current_user` FastAPI 依赖
-2. 多租户改造：
+2. RBAC 角色权限体系：
+   - 四种角色：platform_admin / merchant_admin / merchant_staff / end_user
+   - 权限表：角色 → 权限集合（chat:read, merchant:read, merchant:write, analytics:read, agent:config, admin:*）
+   - `require_permission("merchant:write")` FastAPI 依赖装饰器
+   - 角色绑定 tenant_id（商家管理员只能管自己的租户）
+3. 多租户改造：
    - 所有表加 `tenant_id` 字段（商品、对话、记忆、用户画像）
    - `TenantContext` 中间件：从 JWT 提取 tenant_id，注入请求上下文
    - Qdrant 检索加 tenant_id payload filter
    - Redis key 加 tenant_id 前缀
-3. 数据库迁移：
+   - 数据访问控制：所有查询自动加 `WHERE tenant_id = :current_tenant`，防跨租户泄露
+4. 数据库迁移：
    - 引入 Alembic，管理 schema 版本
-   - 初始迁移脚本
-4. Docker Compose：
+   - 初始迁移脚本（含 RBAC 表）
+5. Docker Compose：
    - postgres + redis + qdrant + app 四个服务（Phase 2 加入 rabbitmq）
    - 一键 `docker compose up` 启动完整环境
 
 ### 简历技术点
 - FastAPI + JWT + OAuth2 认证鉴权体系
-- 多租户数据隔离（shared DB + row-level security）
+- RBAC 角色权限模型（四角色 × 多权限粒度）
+- 多租户数据隔离（shared DB + row-level security + 自动 tenant_id 过滤）
 - Alembic 数据库迁移管理
 - Docker Compose 本地开发环境
 
@@ -95,6 +103,7 @@
 - Redis Lua 脚本实现原子限流
 - API 网关概念（Kong/Traefik）
 - 速率限制策略（per-user, per-tenant, per-endpoint）
+- 订阅套餐与资源配额模型
 
 ### 做什么
 1. 分布式限流：
@@ -111,12 +120,21 @@
    - 商家 API Key 生成/吊销
    - `X-API-Key` header 认证（除了 JWT 之外的第二种认证方式）
    - API Key 绑定 tenant_id
+4. 工具调用权限（套餐分级）：
+   - 订阅套餐定义可用工具集：
+     - free：product_search, ask_clarification
+     - pro：+ multi_query_search, constraint_relaxation, review_summary
+     - enterprise：全部工具 + 自定义 prompt
+   - `tool_executor.py` 执行前检查 `tenant.plan → allowed_tools`
+   - 超出套餐的工具调用返回 `403 Tool not available in your plan`
+   - 配额管理：每月调用次数限制（free: 1000次/月, pro: 50000次/月）
 
 ### 简历技术点
 - Redis Lua 脚本实现分布式限流
 - 三级速率限制策略
 - Traefik API 网关 + 自动服务发现
 - API Key 管理体系
+- 订阅套餐 × 工具权限 × 调用配额的资源管控模型
 
 ---
 
@@ -126,28 +144,47 @@
 
 ### 学什么
 - Agent Guardrails 设计模式（input/output/human-in-the-loop）
+- Prompt 注入防御（商家自定义 prompt 的安全边界）
 - LLM 成本管理（token 计费、预算控制）
 - 结构化输出的可靠性保障
+- 审计日志设计（who did what when）
 
 ### 做什么
 1. 接入已有 Guardrails：
    - `output_guard.validate_output` → 接入 `specialized_agents.py` 的 final answer 路径
    - `permission_guard.check_permission` → 接入 `tool_executor.py`
    - `data_guard` 自动脱敏 → 接入日志和响应
-2. LLM 成本追踪：
+   - input_guard 增强：per-tenant 自定义敏感词过滤规则
+2. Prompt 安全体系：
+   - 商家 prompt 模板化：只允许 `{{变量}}` 占位符，不允许任意代码注入
+   - 系统指令保护：系统 prompt 始终 prepend 在商家 prompt 之前，商家无法覆盖
+   - 商家 prompt 输入经过 input_guard 扫描后再注入模板
+   - prompt 变更审批：商家修改 prompt 后需 platform_admin 审核才生效（enterprise 套餐可自助）
+   - 新增 `src/security/prompt_guard.py`
+3. LLM 成本追踪：
    - 新增 `src/observability/cost_tracker.py`
    - 记录每次 LLM 调用的 input_tokens、output_tokens、model、cost
    - 按 tenant_id 聚合，存入 PostgreSQL
    - 新增 `GET /api/admin/costs` 查询接口
-   - 预算告警：单日消费超阈值 → structlog warning
-3. 结构化输出可靠性：
+   - 预算告警：单日消费超阈值 → structlog warning + 通知商家
+   - 配额耗尽：免费额度用完 → 返回 `402 Payment Required`
+4. 审计日志：
+   - 新增 `src/security/audit.py`
+   - 记录：timestamp, tenant_id, user_id, action, resource, detail, ip_address
+   - 覆盖动作：chat, tool_call, config_change, data_access, admin_action
+   - 存入 PostgreSQL（audit_log 表）
+   - 新增 `GET /api/admin/audit` 查询接口（platform_admin 专属）
+   - 敏感操作实时告警（如 prompt 变更、权限修改）
+5. 结构化输出可靠性：
    - 统一 `_parse_final_answer` 的重试逻辑
    - schema 校验失败 → repair prompt → 最多重试 2 次
    - 记录 schema 修复成功率
 
 ### 简历技术点
 - Agent Guardrails 体系（input/output/permission/data 四层防护）
+- Prompt 安全体系（模板化、注入防御、变更审批）
 - LLM token 成本追踪与预算控制
+- 审计日志（全操作覆盖 + 敏感操作告警）
 - 结构化输出可靠性保障（schema 校验 + 自动修复）
 
 ---
@@ -270,6 +307,7 @@
 | 技术 | 用途 | Phase |
 |------|------|-------|
 | JWT + OAuth2 | 认证鉴权 | 1 |
+| RBAC | 角色权限 | 1 |
 | Alembic | 数据库迁移 | 1 |
 | Celery + RabbitMQ | 消息队列 | 2 |
 | RabbitMQ Management UI | 队列监控 | 2 |
@@ -285,7 +323,11 @@
 | 技术 | 用途 | Phase |
 |------|------|-------|
 | 多租户记忆隔离 | 10K+ 用户 | 1 |
+| 数据访问控制 | 防跨租户泄露 | 1 |
+| 工具权限 + 配额 | 套餐分级管控 | 3 |
 | Guardrails 四层防护 | 生产安全 | 4 |
+| Prompt 安全体系 | 模板化 + 注入防御 + 变更审批 | 4 |
+| 审计日志 | 全操作覆盖 + 告警 | 4 |
 | LLM 成本追踪 | token 计费 | 4 |
 | 结构化输出可靠性 | schema + repair | 4 |
 | 评测框架 | 质量保障 | 5 |
@@ -297,14 +339,16 @@
 ## 简历最终效果
 
 ```
-电商导购 SaaS 平台 | Python / FastAPI / LangGraph / PostgreSQL / Redis / Docker
+电商导购 SaaS 平台 | Python / FastAPI / LangGraph / PostgreSQL / Redis / RabbitMQ / Docker
 
 • 基于 LangGraph 构建多 Agent 导购系统，支持推荐/搜索/详情/对比四种场景，
   Orchestrator DAG 编排复合意图
 • 实现 4 层记忆架构（会话窗口/向量记忆/用户画像/知识库），支持 10K+ 租户隔离
-• 设计 JWT + OAuth2 认证鉴权体系，Redis Lua 脚本实现三级分布式限流
+• 设计 JWT + OAuth2 + RBAC 认证鉴权体系，四角色（平台管理员/商家管理员/商家员工/终端用户）多粒度权限控制
+• Redis Lua 脚本实现三级分布式限流，订阅套餐 × 工具权限 × 调用配额的资源管控模型
 • 集成 Celery + RabbitMQ 消息队列处理异步任务（记忆压缩、画像更新），DLX 死信队列保障消息可靠性
-• 构建 Agent Guardrails 四层防护（输入/输出/权限/数据），LLM token 成本追踪与预算控制
+• 构建 Agent Guardrails 四层防护（输入/输出/权限/数据）+ Prompt 安全体系（模板化、注入防御、变更审批）
+• 实现审计日志系统（全操作覆盖 + 敏感操作实时告警），LLM token 成本追踪与预算控制
 • 搭建评测框架（50 条标注数据，intent/entity/recall/latency 四维指标）+ CI 自动回归
 • Prometheus + Grafana 监控体系，Agent 全链路 Trace 可观测性
 • 微信支付 V3 沙箱集成，Webhook 幂等/重试/死信可靠性设计
