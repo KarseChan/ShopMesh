@@ -39,6 +39,7 @@ celery_app.conf.update(
     task_routes={
         "src.tasks.memory_tasks.*": {"queue": "memory"},
         "src.tasks.cleanup_tasks.*": {"queue": "cleanup"},
+        "src.tasks.event_tasks.*": {"queue": "events"},
     },
 
     # Default queue
