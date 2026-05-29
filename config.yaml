@@ -78,6 +78,23 @@ auth:
   access_token_expire_minutes: 30
   refresh_token_expire_days: 7
 
+# Rate Limiting (Redis sliding window)
+rate_limiting:
+  enabled: true
+  per_user:
+    requests: 60        # max requests per window
+    window_seconds: 60  # sliding window size
+  per_tenant:
+    requests: 300
+    window_seconds: 60
+  global:
+    requests: 1000
+    window_seconds: 60
+  exempt_paths:         # paths that bypass rate limiting
+    - /api/health
+    - /api/auth/login
+    - /api/auth/register
+
 # Logging
 logging:
   level: INFO

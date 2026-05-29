@@ -18,6 +18,7 @@ SSE Events:
 
 import json
 import uuid
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,11 +34,27 @@ from src.security.input_guard import InputViolation, validate_input
 
 from src.auth.router import router as auth_router
 from src.auth.middleware import TenantMiddleware
+from src.ratelimit.limiter import RateLimiter
+from src.ratelimit.middleware import RateLimitMiddleware
 
-app = FastAPI(title="ShoppingAgent API")
+# ---------- Rate limiter (lifecycle managed via lifespan) ----------
+
+rate_limiter = RateLimiter()
+
+
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    yield
+    await rate_limiter.close()
+
+
+app = FastAPI(title="ShoppingAgent API", lifespan=lifespan)
 
 app.include_router(auth_router)
 
+# Middleware execution order (LIFO): CORSMiddleware → TenantMiddleware → RateLimitMiddleware
+# TenantMiddleware sets context vars, RateLimitMiddleware reads them
+app.add_middleware(RateLimitMiddleware, limiter=rate_limiter)
 app.add_middleware(TenantMiddleware)
 app.add_middleware(
     CORSMiddleware,
