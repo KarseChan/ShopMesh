@@ -2,6 +2,7 @@ package com.shopmesh.auth;
 
 import com.shopmesh.auth.dto.*;
 import com.shopmesh.user.User;
+import com.shopmesh.user.UserEventPublisher;
 import com.shopmesh.user.UserRepository;
 import io.jsonwebtoken.Claims;
 import lombok.RequiredArgsConstructor;
@@ -19,6 +20,7 @@ public class AuthService {
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtProvider jwtProvider;
+    private final UserEventPublisher userEventPublisher;
 
     public TokenResponse register(RegisterRequest request) {
         if (userRepository.existsByUsername(request.getUsername())) {
@@ -39,6 +41,13 @@ public class AuthService {
 
         userRepository.save(user);
         log.info("User registered: {} (tenant: {})", user.getUsername(), tenantId);
+
+        // Publish event to RabbitMQ for Python Agent (fire-and-forget)
+        try {
+            userEventPublisher.publishUserRegistered(userId, tenantId, user.getUsername());
+        } catch (Exception e) {
+            log.warn("Failed to publish user.registered event: {}", e.getMessage());
+        }
 
         String accessToken = jwtProvider.createAccessToken(userId, tenantId);
         String refreshToken = jwtProvider.createRefreshToken(userId, tenantId);
