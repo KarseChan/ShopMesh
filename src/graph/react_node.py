@@ -126,6 +126,21 @@ async def node_react_loop(state: dict) -> dict:
                     logger.info("structured_response_parsed",
                                 recommendation_count=len(recommendations),
                                 summary_len=len(summary))
+
+                # Output guard: validate recommendations against search results
+                output_items = recommendations
+                if output_items:
+                    from src.graph.specialized_agents import _extract_search_results_from_log
+                    from src.security.output_guard import OutputViolation, validate_output
+                    search_results = _extract_search_results_from_log(state.get("tool_calls_log", []))
+                    if search_results:
+                        try:
+                            validate_output(output_items, search_results)
+                            logger.info("output_guard_passed", items=len(output_items))
+                        except OutputViolation as e:
+                            logger.warning("output_guard_violation",
+                                           violation_type=e.violation_type, reason=str(e))
+
         except (json.JSONDecodeError, IndexError, KeyError, TypeError):
             # Not structured JSON — use content as-is (backward compatible)
             logger.info("structured_response_fallback", reason="json_parse_failed")

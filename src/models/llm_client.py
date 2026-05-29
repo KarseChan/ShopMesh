@@ -120,6 +120,7 @@ class LLMClient:
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
             "stream": True,
+            "stream_options": {"include_usage": True},
         }
         if tools:
             payload["tools"] = tools
@@ -146,6 +147,15 @@ class LLMClient:
                                 return
                             try:
                                 chunk = json.loads(data_str)
+                                # Capture usage from final chunk (stream_options.include_usage)
+                                usage = chunk.get("usage")
+                                if usage:
+                                    record_usage(
+                                        model=self.model,
+                                        input_tokens=usage.get("prompt_tokens", 0),
+                                        output_tokens=usage.get("completion_tokens", 0),
+                                        tenant_id=get_tenant_id() or "",
+                                    )
                                 delta = chunk.get("choices", [{}])[0].get("delta", {})
                                 content = delta.get("content", "")
                                 if content:

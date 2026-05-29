@@ -181,6 +181,12 @@ async def node_postprocess(state: dict) -> dict:
     if not user_input or not response:
         return {}
 
+    # Output sanitization: mask any PII patterns in the response text
+    from src.security.data_guard import mask_phone, mask_card_number, mask_id_number
+    response = mask_phone(response)
+    response = mask_card_number(response)
+    response = mask_id_number(response)
+
     from src.tasks.memory_tasks import (
         trim_session,
         write_vector_memory,

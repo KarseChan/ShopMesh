@@ -3,7 +3,7 @@
 from src.auth.context import get_context_user_id
 from src.observability.logger import get_logger
 from src.security.data_guard import sanitize_for_log
-from src.security.permission import PermissionViolation, check_rate_limit
+from src.security.permission import PermissionViolation, check_permission, check_rate_limit
 from src.tools.registry import get_tool_by_name
 
 logger = get_logger("tool_executor")
@@ -101,6 +101,13 @@ async def execute_tool(name: str, args: dict) -> dict:
     if tool is None:
         logger.error("tool_not_found", tool=name)
         return {"success": False, "error": f"Tool '{name}' not found"}
+
+    # Permission check (currently all tools are READ — auto-pass)
+    try:
+        check_permission(tool.permissions)
+    except PermissionViolation as e:
+        logger.warning("tool_permission_denied", tool=name, reason=str(e))
+        return {"success": False, "error": str(e)}
 
     # Rate limit check
     user_id = get_context_user_id() or "anonymous"
