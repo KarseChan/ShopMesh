@@ -4,8 +4,6 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import org.springframework.core.Ordered;
-import org.springframework.core.annotation.Order;
 import org.springframework.lang.NonNull;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -13,11 +11,12 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import java.io.IOException;
 
 /**
- * Extracts tenant_id and user_id from request attributes (set by JWT filter)
+ * Extracts tenant_id and user_id from request attributes (set by JwtAuthFilter)
  * and stores them in ThreadLocal TenantContext.
+ *
+ * This filter runs after JwtAuthFilter (registered in SecurityConfig).
  */
 @Component
-@Order(Ordered.HIGHEST_PRECEDENCE + 10)
 public class TenantFilter extends OncePerRequestFilter {
 
     public static final String ATTR_TENANT_ID = "shopmesh.tenant_id";

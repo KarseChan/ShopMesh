@@ -1,6 +1,7 @@
 package com.shopmesh.config;
 
 import com.shopmesh.auth.JwtAuthFilter;
+import com.shopmesh.common.TenantFilter;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -18,6 +19,7 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 public class SecurityConfig {
 
     private final JwtAuthFilter jwtAuthFilter;
+    private final TenantFilter tenantFilter;
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
@@ -32,7 +34,10 @@ public class SecurityConfig {
                         // All other endpoints require authentication
                         .anyRequest().authenticated()
                 )
-                .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
+                // JWT filter sets user_id/tenant_id as request attributes
+                .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)
+                // TenantFilter reads those attributes into ThreadLocal (runs after JWT filter)
+                .addFilterAfter(tenantFilter, JwtAuthFilter.class);
 
         return http.build();
     }
