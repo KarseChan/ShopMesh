@@ -13,7 +13,7 @@ from src.auth.jwt import (
     hash_password,
     verify_password,
 )
-from src.auth.dependencies import _get_db, get_current_user
+from src.auth.dependencies import _get_db, get_current_user, get_current_user_any
 from src.db.models import User
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -112,8 +112,11 @@ def refresh(req: RefreshRequest, db: Session = Depends(_get_db)):
 
 
 @router.get("/me", response_model=UserInfo)
-def me(current_user: User = Depends(get_current_user)):
-    """Get current authenticated user info."""
+def me(current_user: User = Depends(get_current_user_any)):
+    """Get current authenticated user info.
+
+    Accepts both JWT Bearer token and X-API-Key header.
+    """
     return UserInfo(
         user_id=current_user.user_id,
         username=current_user.username,

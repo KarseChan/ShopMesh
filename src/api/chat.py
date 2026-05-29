@@ -33,6 +33,7 @@ from src.memory.conversation_store import get_conversations, get_messages
 from src.security.input_guard import InputViolation, validate_input
 
 from src.auth.router import router as auth_router
+from src.auth.apikey_router import router as apikey_router
 from src.auth.middleware import TenantMiddleware
 from src.ratelimit.limiter import RateLimiter
 from src.ratelimit.middleware import RateLimitMiddleware
@@ -51,6 +52,7 @@ async def lifespan(application: FastAPI):
 app = FastAPI(title="ShoppingAgent API", lifespan=lifespan)
 
 app.include_router(auth_router)
+app.include_router(apikey_router)
 
 # Middleware execution order (LIFO): CORSMiddleware → TenantMiddleware → RateLimitMiddleware
 # TenantMiddleware sets context vars, RateLimitMiddleware reads them

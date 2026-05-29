@@ -99,3 +99,16 @@ class ConversationMessage(SQLModel, table=True):
     role: str  # "user" / "assistant"
     content: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ApiKey(SQLModel, table=True):
+    __tablename__ = "api_keys"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    key_id: str = Field(index=True, unique=True)       # public identifier (prefix)
+    key_hash: str                                       # bcrypt hash of full key
+    tenant_id: str = Field(index=True)
+    name: str = ""                                      # human-readable label
+    is_active: bool = True
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    last_used_at: Optional[datetime] = None
