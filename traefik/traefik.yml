@@ -12,13 +12,9 @@ entryPoints:
   #   address: ":443"
 
 providers:
-  docker:
-    endpoint: "unix:///var/run/docker.sock"
-    exposedByDefault: false  # only route services with traefik.enable=true
-    network: shopmesh
-
+  # File-based routing (fine-grained control: Java vs Python paths)
   file:
-    directory: /etc/traefik/dynamic
+    filename: /etc/traefik/dynamic.yml
     watch: true
 
 log:

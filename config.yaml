@@ -71,12 +71,27 @@ celery:
   broker_url: ${CELERY_BROKER_URL:-amqp://guest:guest@localhost:5672//}
   result_backend: ${CELERY_RESULT_BACKEND:-}
 
-# Auth (JWT)
+# Auth (JWT) — Python-side config
+# NOTE: After Phase 3.5 T4, Python will validate JWT via Java's JWKS endpoint (RS256).
+# Until then, Python continues to use HS256 symmetric verification.
 auth:
+  jwks_url: ${JWKS_URL:-http://localhost:8080/.well-known/jwks.json}  # Java JWKS endpoint (used in P3.5-T4)
   secret_key: ${JWT_SECRET_KEY}
-  algorithm: HS256
+  algorithm: HS256                    # Will change to RS256 in P3.5-T4
   access_token_expire_minutes: 30
   refresh_token_expire_days: 7
+
+# Microservices Architecture (Phase 3.5+)
+services:
+  java_api:
+    url: ${JAVA_API_URL:-http://localhost:8080}   # Java control plane
+    health: /api/health
+  python_agent:
+    url: ${PYTHON_AGENT_URL:-http://localhost:9000}  # Python agent engine
+    health: /api/health
+  rabbitmq:
+    url: ${CELERY_BROKER_URL:-amqp://guest:guest@localhost:5672//}
+    events_queue: events  # Java ↔ Python async communication
 
 # API Gateway (Traefik)
 gateway:

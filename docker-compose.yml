@@ -10,7 +10,9 @@ services:
       - ./traefik:/etc/traefik:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
-      app:
+      java-api:
+        condition: service_healthy
+      python-agent:
         condition: service_healthy
     networks:
       - shopmesh
@@ -76,12 +78,36 @@ services:
     networks:
       - shopmesh
 
-  app:
-    build: .
-    # Port 8000 still exposed internally for direct access / Traefik routing
-    # Traefik handles external traffic on port 80
+  # ── Java Control Plane (Auth / CRUD / Merchant) ──
+  java-api:
+    build: ./shopmesh-java
     expose:
-      - "8000"
+      - "8080"
+    environment:
+      DATABASE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-shopping_agent}
+      DB_USER: ${POSTGRES_USER:-postgres}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-in-production}
+      RABBITMQ_HOST: rabbitmq
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - shopmesh
+
+  # ── Python Agent Engine (LangGraph / Tools / Memory) ──
+  python-agent:
+    build: .
+    expose:
+      - "9000"
     env_file:
       - .env
     environment:
@@ -89,6 +115,7 @@ services:
       REDIS_URL: redis://redis:6379
       QDRANT_URL: http://qdrant:6333
       CELERY_BROKER_URL: amqp://guest:guest@rabbitmq:5672//
+      JWKS_URL: http://java-api:8080/.well-known/jwks.json
     depends_on:
       postgres:
         condition: service_healthy
@@ -98,18 +125,20 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.app.rule=PathPrefix(`/api`)"
-      - "traefik.http.routers.app.entrypoints=web"
-      - "traefik.http.routers.app.middlewares=gateway-ratelimit@file,security-headers@file"
-      - "traefik.http.services.app.loadbalancer.server.port=8000"
+      java-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     networks:
       - shopmesh
 
   celery-worker:
     build: .
-    command: celery -A src.tasks worker -l info -Q memory,cleanup,default
+    command: celery -A src.tasks worker -l info -Q memory,cleanup,default,events
     env_file:
       - .env
     environment:

@@ -1,21 +1,49 @@
 # Traefik v3 dynamic configuration
-# Middlewares applied via Docker labels or file-based routers
+# Fine-grained routing: Java (Auth/CRUD) vs Python (Agent)
 
 http:
+  routers:
+    # Java routes: Auth, API Keys, Users, Merchants, Products, JWKS, Health
+    java-api:
+      rule: "PathPrefix(`/api/auth`) || PathPrefix(`/api/users`) || PathPrefix(`/api/merchants`) || PathPrefix(`/api/products`) || Path(`/.well-known/jwks.json`)"
+      entryPoints:
+        - web
+      service: java-service
+      middlewares:
+        - gateway-ratelimit
+        - security-headers
+
+    # Python routes: Chat, Conversations, Behavior, Tasks
+    python-agent:
+      rule: "PathPrefix(`/api/chat`) || PathPrefix(`/api/conversations`) || PathPrefix(`/api/behavior`) || PathPrefix(`/api/tasks`)"
+      entryPoints:
+        - web
+      service: python-service
+      middlewares:
+        - gateway-ratelimit
+        - security-headers
+
+  services:
+    java-service:
+      loadBalancer:
+        servers:
+          - url: "http://java-api:8080"
+
+    python-service:
+      loadBalancer:
+        servers:
+          - url: "http://python-agent:9000"
+
   middlewares:
     # Rate limit at the gateway level (in-memory, per-Traefik instance)
-    # This is a coarse-grained defense; the fine-grained Redis limiter
-    # handles per-user / per-tenant limits inside the app.
     gateway-ratelimit:
       rateLimit:
-        average: 500        # requests per second (sustained)
-        burst: 1000         # burst capacity
+        average: 500
+        burst: 1000
         period: 1s
         sourceCriterion:
           ipStrategy:
-            depth: 1        # trust 1 proxy hop (Traefik itself)
-
-    # (No strip needed — backend expects /api/* paths as-is)
+            depth: 1
 
     # Security headers
     security-headers:

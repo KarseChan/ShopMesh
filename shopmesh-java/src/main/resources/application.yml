@@ -1,0 +1,56 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: shopmesh-api
+
+  # PostgreSQL
+  datasource:
+    url: ${DATABASE_URL:postgresql://postgres:password@localhost:5432/shopping_agent}
+    driver-class-name: org.postgresql.Driver
+    username: ${DB_USER:postgres}
+    password: ${DB_PASSWORD:password}
+
+  # JPA
+  jpa:
+    hibernate:
+      ddl-auto: validate  # Flyway manages schema; JPA only validates
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+    open-in-view: false
+
+  # Flyway
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    baseline-version: 0
+
+  # RabbitMQ
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER:guest}
+    password: ${RABBITMQ_PASSWORD:guest}
+
+# JWT (RSA)
+shopmesh:
+  jwt:
+    # Path to RSA key pair (PEM format). If not found, keys are auto-generated on startup.
+    private-key-path: ${JWT_PRIVATE_KEY_PATH:config/jwt-private.pem}
+    public-key-path: ${JWT_PUBLIC_KEY_PATH:config/jwt-public.pem}
+    # Fallback: symmetric secret (only for migration period)
+    secret: ${JWT_SECRET_KEY:change-me-in-production}
+    access-token-expire-minutes: 30
+    refresh-token-expire-days: 7
+    issuer: shopmesh-java
+
+# Logging
+logging:
+  level:
+    com.shopmesh: INFO
+    org.springframework.security: WARN
+    org.hibernate.SQL: WARN
