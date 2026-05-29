@@ -243,3 +243,24 @@ async def list_messages(conversation_id: str, user_id: str, limit: int = 50):
     import asyncio
     messages = await asyncio.to_thread(get_messages, user_id, conversation_id, limit)
     return {"messages": messages}
+
+
+@app.get("/api/tasks/{task_id}")
+async def get_task_status(task_id: str):
+    """Query Celery task status.
+
+    Returns: {"task_id", "status", "result", "error"}
+    status: PENDING / STARTED / SUCCESS / FAILURE / RETRY
+    """
+    from src.tasks.celery_app import celery_app
+    result = celery_app.AsyncResult(task_id)
+    response = {
+        "task_id": task_id,
+        "status": result.status,
+    }
+    if result.ready():
+        if result.successful():
+            response["result"] = result.result
+        else:
+            response["error"] = str(result.result)
+    return response
