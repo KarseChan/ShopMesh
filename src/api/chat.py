@@ -283,3 +283,45 @@ async def get_task_status(task_id: str):
         else:
             response["error"] = str(result.result)
     return response
+
+
+@app.get("/api/admin/costs")
+async def get_llm_costs(tenant_id: str | None = None, days: int = 7):
+    """Query LLM usage costs.
+
+    Query params:
+        tenant_id: Filter by tenant (optional, defaults to all)
+        days: Number of days to look back (default 7)
+
+    Returns aggregated daily costs from in-memory accumulator and DB history.
+    """
+    from src.observability.cost_tracker import get_daily_costs, get_costs_from_db
+    from datetime import datetime, timedelta
+
+    # In-memory: today's costs
+    daily = get_daily_costs(tenant_id)
+
+    # DB: historical costs
+    end_date = datetime.now().strftime("%Y-%m-%d")
+    start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    history = []
+    if tenant_id:
+        history = get_costs_from_db(tenant_id, start_date, end_date)
+
+    return {
+        "today": daily,
+        "history": history,
+        "pricing": {
+            "input_per_1m_tokens": _get_pricing("input"),
+            "output_per_1m_tokens": _get_pricing("output"),
+        },
+    }
+
+
+def _get_pricing(direction: str) -> float:
+    """Get configured pricing for display."""
+    from src.config import config as cfg
+    pricing = cfg.get("cost_tracking", {}).get("pricing", {})
+    if direction == "input":
+        return pricing.get("input_per_1m", 0.15)
+    return pricing.get("output_per_1m", 0.60)

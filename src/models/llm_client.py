@@ -8,7 +8,9 @@ from functools import lru_cache
 
 import httpx
 
+from src.auth.context import get_tenant_id
 from src.config import config
+from src.observability.cost_tracker import record_usage
 from src.observability.logger import get_logger
 
 logger = get_logger("llm_client")
@@ -68,6 +70,17 @@ class LLMClient:
                     resp = await client.post(url, json=payload, headers=headers)
                     resp.raise_for_status()
                     data = resp.json()
+
+                # Capture token usage
+                usage = data.get("usage", {})
+                if usage:
+                    record_usage(
+                        model=self.model,
+                        input_tokens=usage.get("prompt_tokens", 0),
+                        output_tokens=usage.get("completion_tokens", 0),
+                        tenant_id=get_tenant_id() or "",
+                    )
+
                 return data["choices"][0]["message"]
             except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout) as e:
                 last_error = e

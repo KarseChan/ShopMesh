@@ -119,6 +119,14 @@ rate_limiting:
     - /api/auth/login
     - /api/auth/register
 
+# LLM Cost Tracking
+cost_tracking:
+  pricing:
+    input_per_1m: 0.15    # $ per 1M input tokens (adjust per model)
+    output_per_1m: 0.60   # $ per 1M output tokens
+  budget:
+    daily_cents: 10000    # $100/day per tenant alert threshold
+
 # Logging
 logging:
   level: INFO

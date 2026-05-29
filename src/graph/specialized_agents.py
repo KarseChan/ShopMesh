@@ -24,6 +24,7 @@ from src.agents.response_schemas import build_repair_prompt, parse_response_json
 from src.graph.tool_executor import execute_tool
 from src.models.llm_client import get_llm
 from src.observability.logger import get_logger
+from src.security.output_guard import OutputViolation, validate_output
 
 logger = get_logger("specialized_agents")
 
@@ -212,6 +213,24 @@ async def _attempt_repair(raw_text: str, response_type: str, messages: list[dict
     return None
 
 
+def _extract_search_results_from_log(tool_log: list[dict]) -> list[dict]:
+    """Extract product search results from tool call log for output guard validation."""
+    search_results = []
+    for entry in tool_log:
+        tool_name = entry.get("tool", "")
+        result = entry.get("result", {})
+        data = result.get("data", result) if isinstance(result, dict) else {}
+
+        if tool_name in ("product_search", "multi_query_search") and isinstance(data, dict):
+            items = data.get("items", [])
+            if items:
+                search_results.extend(items)
+        elif tool_name == "product_detail_batch" and isinstance(data, list):
+            search_results.extend(data)
+
+    return search_results
+
+
 async def _run_agent_loop(state: dict, agent_name: str) -> dict:
     """Shared ReAct loop for all specialized agents.
 
@@ -321,6 +340,20 @@ async def _run_agent_loop(state: dict, agent_name: str) -> dict:
             logger.info("agent_schema_repaired", agent=agent_name)
         else:
             logger.warning("agent_schema_repair_failed", agent=agent_name)
+
+    # Output guard: validate recommendations against search results
+    if parsed and isinstance(parsed, dict):
+        output_items = parsed.get("recommendations", parsed.get("products", []))
+        if output_items:
+            search_results = _extract_search_results_from_log(state.get("tool_calls_log", []))
+            if search_results:
+                try:
+                    validate_output(output_items, search_results)
+                    logger.info("output_guard_passed", agent=agent_name, items=len(output_items))
+                except OutputViolation as e:
+                    logger.warning("output_guard_violation", agent=agent_name,
+                                   violation_type=e.violation_type, reason=str(e))
+                    # Don't block — inject warning into response
 
     # Build result
     recommendations = []

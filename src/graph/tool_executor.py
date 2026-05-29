@@ -1,6 +1,9 @@
 """Tool Executor — unified entry point for Agent tool calls with error handling."""
 
+from src.auth.context import get_context_user_id
 from src.observability.logger import get_logger
+from src.security.data_guard import sanitize_for_log
+from src.security.permission import PermissionViolation, check_rate_limit
 from src.tools.registry import get_tool_by_name
 
 logger = get_logger("tool_executor")
@@ -73,7 +76,8 @@ def _extract_args_for_log(tool_name: str, args: dict) -> dict:
                      "soft_requirements", "hard_constraints")
         }
 
-    return log_args
+    # Sanitize: mask any PII patterns in logged strings
+    return sanitize_for_log(log_args)
 
 
 def _extract_result_for_log(tool_name: str, result) -> dict:
@@ -97,6 +101,14 @@ async def execute_tool(name: str, args: dict) -> dict:
     if tool is None:
         logger.error("tool_not_found", tool=name)
         return {"success": False, "error": f"Tool '{name}' not found"}
+
+    # Rate limit check
+    user_id = get_context_user_id() or "anonymous"
+    try:
+        check_rate_limit(user_id)
+    except PermissionViolation as e:
+        logger.warning("tool_rate_limited", tool=name, user_id=user_id, reason=str(e))
+        return {"success": False, "error": "操作过于频繁，请稍后再试"}
 
     args_log = _extract_args_for_log(name, args)
 

@@ -21,6 +21,8 @@ from typing import Any, Callable
 
 from pydantic import BaseModel, Field
 
+from src.skills.schema import PermissionLevel
+
 
 @dataclass
 class ToolDef:
@@ -32,6 +34,7 @@ class ToolDef:
     return_type: str = "dict"
     version: str = "1.0.0"
     func: Callable | None = None
+    permissions: PermissionLevel = PermissionLevel.READ
 
     def to_tool_schema(self) -> dict[str, Any]:
         """Convert to OpenAI-compatible function calling schema."""

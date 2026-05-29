@@ -14,9 +14,10 @@ from src.observability.logger import get_logger
 logger = get_logger("data_guard")
 
 # Patterns for sensitive data
-_CARD_PATTERN = re.compile(r"\b(\d{4})\d{8,12}(\d{4})\b")
-_PHONE_PATTERN = re.compile(r"\b(1[3-9]\d)\d{4}(\d{4})\b")
-_ID_PATTERN = re.compile(r"\b(\d{6})\d{8}(\d{4})\b")
+# Use (?<!\d) instead of \b for proper matching with Chinese characters
+_CARD_PATTERN = re.compile(r"(?<!\d)(\d{4})\d{8,12}(\d{4})(?!\d)")
+_PHONE_PATTERN = re.compile(r"(?<!\d)(1[3-9]\d)\d{4}(\d{4})(?!\d)")
+_ID_PATTERN = re.compile(r"(?<!\d)(\d{6})\d{8}(\d{4})(?!\d)")
 
 # Fields that should never appear in logs
 _SENSITIVE_FIELDS = {"card_number", "cvv", "password", "id_number", "token", "secret"}
