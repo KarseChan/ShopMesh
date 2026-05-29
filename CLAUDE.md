@@ -4,198 +4,171 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-基于 LangGraph 的智能导购系统，已从固定 Pipeline 工作流改造为**混合式 Agent 架构**（确定性预处理 + ReAct 动态决策）。
+ShopMesh — 基于 LangGraph 的智能导购系统，**双语言微服务架构**：Java 控制面（Auth/CRUD）+ Python Agent 引擎（LangGraph/Tools/Memory）。通过 Traefik 网关路径级分流，RabbitMQ 异步通信。
 
-**当前阶段**: 主体开发已完成，进入**业务测试与迭代**阶段。根据实际导购场景测试结果，修复问题、优化体验。问题记录见 `reports/` 目录。
-
-**已完成的开发阶段**:
-1. 确定性预处理 + 工具化（T1.1-T1.9）✅
-2. ReAct Agent 核心（T2.1-T2.6）✅
-3. 动态决策增强（T3.1-T3.4）✅
-4. API 与前端适配（T4.1-T4.2）✅
-5. 测试与验证（T5.1-T5.3）✅
-
-**目标架构**:
-```
-用户输入 → 确定性预层（intent + entity + memory，并行）→ ReAct Agent（动态调用 Tools）→ 确定性后处理（记忆更新）→ 最终回复
-```
+**当前阶段**: Phase 4 完成（Agent 生产化），进入 Phase 5（安全体系）。
 
 ## Tech Stack
 
-- **Backend**: Python 3.11+ / LangGraph / FastAPI / httpx
-- **Vector DB**: Qdrant + BGE-M3 (Ollama) for product search & intent routing
-- **Storage**: PostgreSQL (SQLModel) / Redis (session)
+- **Java 控制面**: Spring Boot 3.4 / Spring Security / Spring Data JPA / Flyway / jjwt (RSA-256)
+- **Python Agent**: Python 3.11+ / LangGraph / FastAPI / httpx / Celery
+- **Vector DB**: Qdrant + BGE-M3 (Ollama)
+- **Storage**: PostgreSQL 16 (shared, Flyway schema) / Redis 7 (session + Celery result backend)
+- **Message Queue**: RabbitMQ (4 queues: memory, cleanup, default, events)
+- **Gateway**: Traefik v3 (路径分流: /api/auth → Java, /api/chat → Python)
 - **Frontend**: Next.js 14 / React 18 / Tailwind CSS / Zustand
-- **Logging**: structlog (JSON format)
+- **Logging**: structlog (JSON)
 
 ## Common Commands
 
-### Backend
+### Python Backend
 ```bash
-# Activate venv first
+# Activate venv
 source .venv/Scripts/activate   # Git Bash
 .venv\Scripts\activate          # CMD
 
 # Run API server
-uvicorn src.api.chat:app --reload --port 8000
+uvicorn src.api.chat:app --reload --port 9000
 
-# Import mock data to Qdrant (run once after DB setup)
-python -m data.import_data
+# Run tests
+python -m pytest tests/                                    # all
+python -m pytest tests/test_guardrails_integration.py      # single file
+python -m pytest tests/test_cost_tracker.py::TestCostCalculation::test_input_only  # single test
 
-# Run tests (pytest)
-python -m pytest tests/                    # all tests
-python -m pytest tests/test_scaffold.py    # single file
-python -m pytest tests/test_scaffold.py::test_config_yaml_loads  # single test
-
-# Build vector index (requires Qdrant + Ollama running)
-python scripts/build_index.py
-python scripts/build_index.py --data data/mock_data.json --collection products
-
-# Generate mock product data
-python scripts/generate_mock_products.py --count 5000 --output data/mock_products_5k.json
-
-# CLI usage
+# CLI
 python main.py "帮我找护肤品"              # single query
-python main.py --stream "帮我找护肤品"     # with streaming output
-python main.py                            # interactive mode
+python main.py --stream "帮我找护肤品"     # streaming
+
+# Build vector index (requires Qdrant + Ollama)
+python scripts/build_index.py
+
+# Generate mock data
+python scripts/generate_mock_products.py --count 5000 --output data/mock_products_5k.json
 ```
 
-### Frontend
+### Java (shopmesh-java/)
+```bash
+cd shopmesh-java
+mvn test                    # all tests (19 pass, uses H2 in-memory)
+mvn spring-boot:run         # local dev (requires PostgreSQL)
+```
+
+### Frontend (frontend/)
 ```bash
 cd frontend
-npm run dev     # dev server (default http://localhost:3000)
-npm run build   # production build
-npm run lint    # ESLint
+npm run dev     # http://localhost:3000
+npm run build
+npm run lint
+```
+
+### Docker Compose
+```bash
+docker compose up           # all 8 services (traefik, java-api, python-agent, celery-worker, celery-beat, postgres, redis, qdrant, rabbitmq)
+docker compose up -d        # detached
 ```
 
 ## Architecture
 
-### 原有工作流 (shopping_graph.py) — 保留不动
+### 双语言微服务分层
 
 ```
-classify_intent → [extract_entities ∥ recall_memory] → should_clarify?
-    yes → clarify → END (wait for user reply, loop back next turn)
-    no  → hybrid_retrieve → promotion_calculate → rank → explain → END
+Client → Traefik (:80)
+  ├── /api/auth/*, /api/auth/api-keys/*, /.well-known/jwks.json  → Java :8080
+  └── /api/chat/*, /api/conversations/*, /api/behavior/*, /api/tasks/*  → Python :9000
 ```
 
-- `classify_intent`: Semantic Router (fast, embedding similarity) → LLM fallback (slow)
-- `extract_entities` + `recall_memory`: run in parallel via LangGraph fan-out
-- `should_clarify`: priority = missing_degree × discrimination_power, max 3 rounds
-- `hybrid_retrieve`: Qdrant vector search with payload pre-filter (not post-filter)
-- `rank`: multi-objective weighted fusion (relevance/price/reputation/timeliness/personalization)
+- **Java 控制面** (`shopmesh-java/`): Auth (register/login/refresh/me)、API Key CRUD、RSA JWT 签发、JWKS 公钥端点、用户事件发布
+- **Python Agent 引擎** (`src/`): LangGraph Agent、Tools、Memory、Celery 后台任务
+- **共享**: PostgreSQL (Java Flyway 管理 schema)、Redis、Qdrant、RabbitMQ
 
-### 新架构：混合式 Agent (shopping_agent.py)
+### JWT 跨语言信任
 
-```
-preprocess → react_loop → 成功 → postprocess → END
-                       ↓ 失败
-                    fallback → postprocess → END
-```
+Java 签发 RS256 JWT → Python 通过 JWKS 端点拉取公钥验证。`src/auth/jwks_client.py` 缓存公钥 1 小时自动刷新。Python 不再签发 JWT。
 
-### 多 Agent 架构 (multi_agent_graph.py) — 当前默认模式
+### Python Agent Pipeline (multi_agent_graph.py — 当前默认)
 
 ```
-preprocess → agent_router → recommend/search/detail/compare/order agent
-    → (continue/end/fallback) → postprocess → END
+preprocess (intent + entity + memory 并行)
+  → agent_router (确定性 if/else)
+  → search_recommend_agent / detail_compare_agent (ReAct loop)
+  → postprocess (记忆更新 + 偏好提取)
+  → END
 ```
 
-- `agent_router`: 确定性 if/else 路由（基于 user_goal），无 LLM 调用
-- 每个 Agent 有独立 prompt、tool 子集、max_iterations（配置在 config.yaml `agents` 下）
-- Agent 路由：recommend_agent / search_agent / detail_agent / compare_agent / order_agent
-- API 通过 `mode` 参数切换：`"multi_agent"` (默认) / `"agent"` / `"workflow"`
+每个 Agent 有独立 prompt、tool 子集、max_iterations（config.yaml `agents` 下）。Agent 路由基于 intent 分类结果。
 
-**确定性预处理层** (graph/preprocessing.py):
-- `node_preprocess`: intent + entity + memory 并行执行，输出到 state
-- 低风险、强结构化，固定执行保证稳定性
+### Agent 可调用 Tools (src/tools/)
 
-**ReAct 动态决策** (graph/react_node.py):
-- Agent 根据预处理结果动态调用 Tools
-- 最大循环 5 次，含死循环检测
-- 终止条件：final_response / max_iterations / loop_detected → fallback
+| Tool | 功能 |
+|------|------|
+| product_search | 一站式检索：硬筛+向量+排序 |
+| multi_query_search | 多查询并行检索+去重+重排 |
+| product_detail_batch | 批量获取商品详情 |
+| price_compare | 多商品比价 |
+| review_summary | 评论摘要 |
+| constraint_relaxation | 放宽检索约束 |
+| ask_clarification | 缺失槽位检查+追问 |
 
-**Agent 可调用的 Tools** (src/tools/):
-| Tool | 文件 | 功能 |
+Tools 通过 `ToolDef` 注册到 `tool_registry`，`execute_tool()` 是统一入口（含 permission + rate limit 检查）。
+
+### Guardrails 四层防护 (src/security/)
+
+- **input_guard**: prompt 注入检测 + 长度限制 + intent 白名单（接入 `/api/chat` 端点）
+- **output_guard**: 幻觉检测 + 价格边界 + 覆盖率验证（接入 specialized_agents + react_node 最终输出）
+- **permission**: 权限等级 (READ/WRITE/SENSITIVE) + 速率限制 10次/分钟/用户（接入 tool_executor）
+- **data_guard**: PII 脱敏 + 日志消毒 + 响应文本 mask（接入 tool_executor 日志 + postprocessing 响应）
+
+### Memory 系统 (src/memory/)
+
+四层记忆架构：
+- **L1 Working Memory**: 进程内 dict，单次执行
+- **L2a Session Memory**: Redis List 滑动窗口（5 轮），超限 LLM 压缩
+- **L2c Vector Memory**: Qdrant 统一集合 `user_long_term_memories`，BGE-M3 embedding，读时衰减
+- **L3 User Profile**: PostgreSQL `user_profiles` 表，per-user per-category，EMA 价格范围 + 品牌偏好
+
+### Celery 后台任务 (src/tasks/)
+
+| 队列 | 任务 | 说明 |
 |------|------|------|
-| product_search | tools/product_search.py | 一站式检索：硬筛+向量+排序 |
-| multi_query_search | tools/multi_query_search.py | 多查询并行检索+去重+重排 |
-| product_detail_batch | tools/product_detail.py | 批量获取商品详情 |
-| price_compare | tools/product_detail.py | 多商品比价 |
-| review_summary | tools/review_tool.py | 评论摘要 |
-| constraint_relaxation | tools/agent_tools.py | 放宽检索约束 |
-| ask_clarification | tools/agent_tools.py | 缺失槽位检查+追问 |
+| memory | trim_session, write_vector_memory, batch_classify_preferences, update_profile_preference, save_conversation_message, process_behavior_signal | 记忆和偏好操作 |
+| cleanup | cleanup_expired_memories, cleanup_user_memories | 定期清理（Beat 每日调度） |
+| events | handle_user_registered, handle_user_profile_updated | Java → Python 事件消费 |
+| default | (fallback) | 未路由的任务 |
 
-**底层函数保留**（由 Tools 内部调用，不暴露给 Agent）:
-- `product_filter_search()` → product_search 内部
-- `product_vector_search()` → product_search 内部
-- `rerank_products()` → product_search 内部
-- `slot_checker()` → ask_clarification 内部
+### LLM 成本追踪 (src/observability/cost_tracker.py)
 
-**确定性后处理** (graph/postprocessing.py):
-- 偏好提取 + 长期偏好 vs 临时需求判断 + 记忆写入
+- `LLMClient.chat()` 和 `chat_stream()` 自动捕获 token usage
+- 按 tenant 聚合，structlog 记录 + PostgreSQL `llm_usage` 表持久化
+- 日消费超阈值 → structlog warning 告警
+- `GET /api/admin/costs` 查询接口
 
 ### State Management (graph/state.py)
 
-`ShoppingState` is a TypedDict with three field categories:
-- **Reducer fields** (`Annotated[list, add_messages]`): parallel-safe append (messages, tool_calls, errors)
-- **Exclusive fields**: each agent writes its own (intent, entities, search_results, ranked_results, etc.)
-- **Read-write fields**: shared counters (clarification_count, asked_fields)
+`ShoppingState` 字段分类：
+- **Reducer fields** (`Annotated[list, add_messages]`): 并行安全追加
+- **Exclusive fields**: 各 agent 独占写入
+- **Read-write fields**: 共享计数器
 
-State only stores working memory. Execution logs go to structlog, NOT state.
+State 只存工作记忆，执行日志走 structlog。
 
 ### HITL (Human-in-the-Loop) Order Flow
 
-Uses LangGraph's native `interrupt()` mechanism:
-1. `node_prepare_order` → prepares order details
-2. `node_confirm_order` → calls `interrupt("请确认下单")`, graph pauses
-3. Frontend sends `POST /api/chat/resume` with `Command(resume=True/False)`
-4. Graph resumes from checkpoint, executes confirm or cancel
-
-### Intent Classification (router/)
-
-Two-tier: Semantic Router (Qdrant embedding similarity, threshold 0.80) → LLM fallback.
-Intent samples stored in `data/intent_samples.json`, indexed into Qdrant collection `intent_samples`.
-
-### Memory System (memory/)
-
-L2c vector memory: per-user Qdrant collection `memory_{user_id}`. Triggered by reference words (上次/那个/之前) or cross-category jumps. Fire-and-forget writes after each recommendation.
-
-### Behavior Tracking (memory/behavior_tracker.py)
-
-Implicit feedback loop: frontend reports user actions (click/select/reject/dwell) via `POST /api/behavior`. Updates L3 User Profile with EMA price range narrowing and brand preference reinforcement. Non-blocking to main request path.
-
-### Security (security/)
-
-- Input guard: prompt injection detection (regex), length limit (500 chars), intent whitelist
-- Output guard: filters sensitive info from LLM responses
-- Data guard: PII protection
-
-### Reports (reports/)
-
-Problem reports and architecture plans. Key file: `problem.md` — tracks all bugs found during testing with root cause and fix details. New fixes should be appended here.
-
-### Frontend (frontend/)
-
-- Next.js 14 App Router with React 18, Tailwind CSS, Zustand for state
-- Key dirs: `app/` (pages), `components/` (ChatBox, ProductCard, etc.), `hooks/` (useChatStream SSE hook)
-- SSE client parses events: intent → entities → clarification → results → explanation → done
+LangGraph `interrupt()` 机制：prepare_order → interrupt("请确认下单") → 前端 POST /api/chat/resume → confirm/cancel。
 
 ## Development Guidelines
 
-- **Config**: everything in `config.yaml`, use `${ENV_VAR}` for secrets (resolved at load time)
-- **LLM/Embedding calls**: must be async (`asyncio.to_thread` for sync wrappers)
-- **State**: working memory only, no execution logs
-- **Parallel fields**: use `Annotated[list, add]` reducer for fields written by parallel nodes
+- **Config**: 一切在 `config.yaml`，密钥用 `${ENV_VAR}`
+- **LLM/Embedding**: 必须 async（`asyncio.to_thread` 包装同步调用）
+- **State**: 只存工作记忆，不存执行日志
 - **Commit messages**: `<动词>: <简述>` (e.g., `fix: 修复 LLM JSON 解析失败`)
-- **Problem reports**: write issue + fix to `reports/problem.md` after each fix
-- **Development pace**: controlled by user, do not auto-advance to next task
-- **测试阶段原则**: 以业务场景测试驱动，发现问题就地修复，每次修复后记录到 reports/
-- **转化原则**: 原有工作流函数（shopping_graph.py 及其依赖的 agents/）**不删除、不修改**，只额外新增 Tools 和新 Graph。新旧架构可共存，通过 API 切换
+- **Problem reports**: 记录到 `reports/problem.md`
+- **开发节奏**: 用户控制，不自动推进下一任务
+- **转化原则**: 原有 shopping_graph.py 及 agents/ 函数**不删除、不修改**，新旧架构通过 API `mode` 参数切换
 
 ## Forbidden
 
 - Hardcoded API keys / thresholds / model names in code
 - Execution logs in State (use structlog)
-- Calling sentence_transformers on the main thread (use asyncio.to_thread)
-- Auto-invoking skills unless explicitly requested
+- Calling sentence_transformers on the main thread
 - Modifying or deleting the original shopping_graph.py or agents/ functions
-- Mixing execution logs into State fields (structlog only)
+- Mixing execution logs into State fields
