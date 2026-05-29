@@ -13,10 +13,13 @@ _CONFIG_PATH = _ROOT / "config.yaml"
 
 
 def _resolve_env_vars(obj):
-    """Recursively resolve ${VAR} placeholders in config values."""
+    """Recursively resolve ${VAR} and ${VAR:-default} placeholders."""
     if isinstance(obj, str) and obj.startswith("${") and obj.endswith("}"):
-        var_name = obj[2:-1]
-        return os.environ.get(var_name, obj)
+        expr = obj[2:-1]
+        if ":-" in expr:
+            var_name, default = expr.split(":-", 1)
+            return os.environ.get(var_name, default)
+        return os.environ.get(expr, obj)
     elif isinstance(obj, dict):
         return {k: _resolve_env_vars(v) for k, v in obj.items()}
     elif isinstance(obj, list):
