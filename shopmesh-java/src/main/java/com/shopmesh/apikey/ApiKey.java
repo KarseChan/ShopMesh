@@ -30,9 +30,11 @@ public class ApiKey {
     private String tenantId;
 
     @Column(name = "name")
+    @Builder.Default
     private String name = "";
 
     @Column(name = "is_active")
+    @Builder.Default
     private Boolean isActive = true;
 
     @Column(name = "created_at")
