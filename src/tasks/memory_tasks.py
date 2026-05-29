@@ -124,3 +124,34 @@ def save_conversation_message(
     """Persist a conversation message to PostgreSQL."""
     from src.memory.conversation_store import save_message
     save_message(user_id, session_id, role, content)
+
+
+@celery_app.task(
+    name="tasks.memory.process_behavior_signal",
+    queue="memory",
+    max_retries=3,
+    default_retry_delay=3,
+    soft_time_limit=15,
+    time_limit=30,
+)
+def process_behavior_signal(
+    user_id: str,
+    category: str,
+    action: str,
+    product_price: float | None = None,
+    product_brand: str | None = None,
+    product_id: str | None = None,
+    duration_ms: int | None = None,
+):
+    """Process a user behavior signal — update L3 profile."""
+    from src.memory.behavior_tracker import BehaviorSignal, process_signal
+    signal = BehaviorSignal(
+        user_id=user_id,
+        category=category,
+        action=action,
+        product_price=product_price,
+        product_brand=product_brand,
+        product_id=product_id,
+        duration_ms=duration_ms,
+    )
+    _run_async(process_signal(signal))

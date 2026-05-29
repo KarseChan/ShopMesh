@@ -6,19 +6,17 @@ Main path (sync, < 5ms):
   - L2a: add_turn to Redis sliding window
   - L1 rule filter: noise → skip, strong signal → write immediately
 
-Background path (async):
+Background path (Celery tasks):
   - L2b: trim evicted turns → LLM compression
   - L2c: batch LLM preference classification (every 3 turns, with SETNX lock)
+  - Conversation persistence, vector memory writes, profile updates
 """
 
 import asyncio
 import json
 import re
 
-from src.memory.conversation_store import save_message
-from src.memory.memory_retriever import write_chunk, write_chunk_with_contradiction_awareness
 from src.memory.session_memory import get_session_memory
-from src.memory.user_profile import update_profile_from_preference
 from src.models.llm_client import get_llm
 from src.observability.logger import get_logger
 
@@ -183,47 +181,55 @@ async def node_postprocess(state: dict) -> dict:
     if not user_input or not response:
         return {}
 
+    from src.tasks.memory_tasks import (
+        trim_session,
+        write_vector_memory,
+        batch_classify_preferences,
+        update_profile_preference,
+        save_conversation_message,
+    )
+
     # ---- L2a: Write sliding window (sync, Redis RPUSH < 1ms) ----
     session_mem = get_session_memory(session_id)
     await session_mem.add_turn(user_input, response)
 
-    # ---- Persistent conversation storage (async, PostgreSQL) ----
-    asyncio.create_task(asyncio.to_thread(save_message, user_id, session_id, "user", user_input))
-    asyncio.create_task(asyncio.to_thread(save_message, user_id, session_id, "assistant", response))
+    # ---- Persistent conversation storage → Celery ----
+    save_conversation_message.delay(user_id, session_id, "user", user_input)
+    save_conversation_message.delay(user_id, session_id, "assistant", response)
 
-    # ---- L2b: Trim evicted turns to summary (async, LLM 1~3s) ----
-    asyncio.create_task(session_mem.trim())
+    # ---- L2b: Trim evicted turns to summary → Celery ----
+    from src.auth.context import get_tenant_id
+    trim_session.delay(session_id, tenant_id=get_tenant_id())
 
     # ---- L2c: Two-level preference extraction ----
     category = entities.get("category", "") or ""
     if _has_strong_signal(user_input):
-        # Level 1: strong signal → write immediately with contradiction detection
-        asyncio.create_task(write_chunk_with_contradiction_awareness(
+        # Level 1: strong signal → write immediately via Celery
+        write_vector_memory.delay(
             user_id=user_id,
             user_input=user_input,
             assistant_output=response,
             entities=entities,
             intent=intent,
             category=category,
-        ))
+        )
         # Also update L3 profile for brand/price strong signals
-        # update_profile_from_preference handles positive vs negative internally
         if any(kw in user_input for kw in ["品牌", "喜欢", "不喜欢", "不要", "排除", "不想"]):
-            asyncio.create_task(update_profile_from_preference(
+            update_profile_preference.delay(
                 user_id=user_id,
                 category=category or "通用",
                 preference_type="brand_preference",
                 text=user_input,
                 confidence=0.9,
-            ))
+            )
         if any(kw in user_input for kw in ["预算", "便宜", "性价比", "不要太贵"]):
-            asyncio.create_task(update_profile_from_preference(
+            update_profile_preference.delay(
                 user_id=user_id,
                 category=category or "通用",
                 preference_type="price_sensitivity",
                 text=user_input,
                 confidence=0.9,
-            ))
+            )
         logger.info("memory_saved", user_id=user_id, reason="strong_signal")
 
     elif _is_noise(user_input):
@@ -232,7 +238,6 @@ async def node_postprocess(state: dict) -> dict:
 
     else:
         # Middle ground: defer to batch LLM classification
-        # Use Redis counter, trigger batch every 3 turns
         from src.db.redis_client import get_redis
         redis = get_redis()
         counter_key = f"session:{session_id}:turn_count"
@@ -244,7 +249,7 @@ async def node_postprocess(state: dict) -> dict:
             lock_key = f"lock:batch_memory:{session_id}"
             acquired = await redis.set(lock_key, "1", nx=True, ex=10)
             if acquired:
-                asyncio.create_task(_batch_classify_preferences(session_id, user_id, category))
+                batch_classify_preferences.delay(session_id, user_id, category)
                 logger.info("batch_triggered", turn_count=count)
             else:
                 logger.info("batch_skipped", reason="lock_held", turn_count=count)

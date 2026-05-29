@@ -28,7 +28,6 @@ from src.graph.hitl_nodes import build_hitl_order_graph
 from src.graph.shopping_agent import run_agent_stream
 from src.graph.shopping_graph import run_shopping_stream
 from src.graph.multi_agent_graph import run_multi_agent_stream
-from src.memory.behavior_tracker import BehaviorSignal, process_signal
 from src.memory.conversation_store import get_conversations, get_messages
 from src.security.input_guard import InputViolation, validate_input
 
@@ -217,7 +216,8 @@ async def report_behavior(request: Request):
     }
     """
     body = await request.json()
-    signal = BehaviorSignal(
+    from src.tasks.memory_tasks import process_behavior_signal
+    process_behavior_signal.delay(
         user_id=body.get("user_id", body.get("session_id", "default_user")),
         category=body.get("category", ""),
         action=body["action"],
@@ -226,7 +226,6 @@ async def report_behavior(request: Request):
         product_id=body.get("product_id"),
         duration_ms=body.get("duration_ms"),
     )
-    await process_signal(signal)
     return {"status": "ok"}
 
 
