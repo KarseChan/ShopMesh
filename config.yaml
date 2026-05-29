@@ -78,6 +78,15 @@ auth:
   access_token_expire_minutes: 30
   refresh_token_expire_days: 7
 
+# API Gateway (Traefik)
+gateway:
+  enabled: true
+  entrypoint: web            # Traefik entrypoint name
+  dashboard_url: http://localhost:8080  # Traefik dashboard (dev)
+  rate_limit:                # gateway-level rate limit (coarse-grained)
+    average: 500             # requests per second (sustained)
+    burst: 1000              # burst capacity
+
 # Rate Limiting (Redis sliding window)
 rate_limiting:
   enabled: true

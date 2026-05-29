@@ -1,0 +1,28 @@
+# Traefik v3 static configuration
+# See: https://doc.traefik.io/traefik/
+
+api:
+  dashboard: true
+  insecure: true  # dashboard on :8080 without auth (dev only)
+
+entryPoints:
+  web:
+    address: ":80"
+  # websecure:
+  #   address: ":443"
+
+providers:
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false  # only route services with traefik.enable=true
+    network: shopmesh
+
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+
+log:
+  level: INFO
+
+accessLog:
+  bufferingSize: 100

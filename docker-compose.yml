@@ -1,4 +1,20 @@
 services:
+  traefik:
+    image: traefik:v3.2
+    command:
+      - "--configFile=/etc/traefik/traefik.yml"
+    ports:
+      - "80:80"
+      - "8080:8080"   # dashboard (dev only)
+    volumes:
+      - ./traefik:/etc/traefik:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      app:
+        condition: service_healthy
+    networks:
+      - shopmesh
+
   rabbitmq:
     image: rabbitmq:3-management-alpine
     ports:
@@ -11,6 +27,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - shopmesh
 
   postgres:
     image: postgres:16-alpine
@@ -27,6 +45,8 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    networks:
+      - shopmesh
 
   redis:
     image: redis:7-alpine
@@ -39,6 +59,8 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    networks:
+      - shopmesh
 
   qdrant:
     image: qdrant/qdrant:v1.12.1
@@ -51,11 +73,15 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    networks:
+      - shopmesh
 
   app:
     build: .
-    ports:
-      - "8000:8000"
+    # Port 8000 still exposed internally for direct access / Traefik routing
+    # Traefik handles external traffic on port 80
+    expose:
+      - "8000"
     env_file:
       - .env
     environment:
@@ -72,6 +98,14 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.app.rule=PathPrefix(`/api`)"
+      - "traefik.http.routers.app.entrypoints=web"
+      - "traefik.http.routers.app.middlewares=gateway-ratelimit@file,security-headers@file"
+      - "traefik.http.services.app.loadbalancer.server.port=8000"
+    networks:
+      - shopmesh
 
   celery-worker:
     build: .
@@ -90,6 +124,8 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+    networks:
+      - shopmesh
 
   celery-beat:
     build: .
@@ -103,6 +139,12 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
+    networks:
+      - shopmesh
+
+networks:
+  shopmesh:
+    driver: bridge
 
 volumes:
   pgdata:

@@ -1,0 +1,29 @@
+# Traefik v3 dynamic configuration
+# Middlewares applied via Docker labels or file-based routers
+
+http:
+  middlewares:
+    # Rate limit at the gateway level (in-memory, per-Traefik instance)
+    # This is a coarse-grained defense; the fine-grained Redis limiter
+    # handles per-user / per-tenant limits inside the app.
+    gateway-ratelimit:
+      rateLimit:
+        average: 500        # requests per second (sustained)
+        burst: 1000         # burst capacity
+        period: 1s
+        sourceCriterion:
+          ipStrategy:
+            depth: 1        # trust 1 proxy hop (Traefik itself)
+
+    # (No strip needed — backend expects /api/* paths as-is)
+
+    # Security headers
+    security-headers:
+      headers:
+        browserXssFilter: true
+        contentTypeNosniff: true
+        frameDeny: true
+        stsIncludeSubdomains: true
+        stsPreload: true
+        stsSeconds: 31536000
+        customFrameOptionsValue: "SAMEORIGIN"
