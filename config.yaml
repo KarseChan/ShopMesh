@@ -66,6 +66,11 @@ memory:
   summary_max_words: 200
   recall_top_k: 5
 
+# Celery (task queue)
+celery:
+  broker_url: ${CELERY_BROKER_URL:-amqp://guest:guest@localhost:5672//}
+  result_backend: ${CELERY_RESULT_BACKEND:-}
+
 # Auth (JWT)
 auth:
   secret_key: ${JWT_SECRET_KEY}

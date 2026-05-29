@@ -1,4 +1,17 @@
 services:
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmqdata:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   postgres:
     image: postgres:16-alpine
     environment:
@@ -49,6 +62,7 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-shopping_agent}
       REDIS_URL: redis://redis:6379
       QDRANT_URL: http://qdrant:6333
+      CELERY_BROKER_URL: amqp://guest:guest@rabbitmq:5672//
     depends_on:
       postgres:
         condition: service_healthy
@@ -56,8 +70,42 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  celery-worker:
+    build: .
+    command: celery -A src.tasks worker -l info -Q memory,cleanup,default
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-shopping_agent}
+      REDIS_URL: redis://redis:6379
+      QDRANT_URL: http://qdrant:6333
+      CELERY_BROKER_URL: amqp://guest:guest@rabbitmq:5672//
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  celery-beat:
+    build: .
+    command: celery -A src.tasks beat -l info
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-shopping_agent}
+      REDIS_URL: redis://redis:6379
+      CELERY_BROKER_URL: amqp://guest:guest@rabbitmq:5672//
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
 
 volumes:
   pgdata:
   redisdata:
   qdrantdata:
+  rabbitmqdata:
