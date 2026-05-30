@@ -150,9 +150,9 @@ def _build_messages(state: dict, system_prompt: str) -> list[dict]:
         for task_id, result in prior_results.items():
             if isinstance(result, dict) and result.get("success"):
                 data = result.get("data", {})
-                if isinstance(data, dict) and "data" in data:
-                    # Tool result: summarize products
-                    products = data["data"]
+                if isinstance(data, dict):
+                    # Tool result: summarize products (supports both "data" and "results" keys)
+                    products = data.get("data") or data.get("results")
                     if isinstance(products, list) and products:
                         summaries = []
                         for p in products[:5]:
@@ -384,6 +384,7 @@ async def _run_agent_loop(state: dict, agent_name: str) -> dict:
         "recommendations": recommendations,
         "response_type": cfg.response_type,
         "iteration": state.get("iteration", 0) + 1,
+        "tool_calls_log": state.get("tool_calls_log", []),
     }
 
     # Set narrative streaming flags

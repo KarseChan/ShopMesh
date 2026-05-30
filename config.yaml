@@ -26,7 +26,7 @@ embedding:
 # Vector DB
 vector_db:
   provider: qdrant
-  url: ${QDRANT_URL:-http://localhost:6333}
+  url: ${QDRANT_URL:-http://localhost:6336}
   collection: products
 
 # Redis

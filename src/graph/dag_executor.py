@@ -92,6 +92,7 @@ async def _execute_agent_task(
     """Execute a type:agent task by running the agent's ReAct loop.
 
     Injects prior task results into the agent's context so it can use them.
+    Loops until the agent generates a final answer (no tool calls) or hits max iterations.
     """
     from src.agents.agent_config import get_agent_config
     from src.graph.specialized_agents import _run_agent_loop
@@ -101,6 +102,7 @@ async def _execute_agent_task(
         return {"success": False, "error": f"No agent for task {task['task_id']}"}
 
     agent_name = tmpl.agent
+    max_iterations = state.get("max_iterations", 5)
 
     # Build enriched state with prior task results
     agent_state = {
@@ -108,10 +110,39 @@ async def _execute_agent_task(
         "_prior_task_results": prior_results,
         "_task_args": task_args,
         "iteration": 0,  # reset iteration for each agent task
+        "tool_calls_log": [],
     }
 
     try:
-        result = await _run_agent_loop(agent_state, agent_name)
+        for iteration in range(max_iterations):
+            logger.info("agent_loop_iteration", agent=agent_name,
+                        task_id=task["task_id"], iteration=iteration)
+            try:
+                result = await _run_agent_loop(agent_state, agent_name)
+            except Exception as loop_err:
+                logger.error("agent_loop_error", agent=agent_name,
+                             task_id=task["task_id"], iteration=iteration,
+                             error=str(loop_err))
+                raise
+
+            # If result has final_response, agent is done
+            if "final_response" in result:
+                logger.info("agent_loop_done", agent=agent_name,
+                            task_id=task["task_id"], iteration=iteration)
+                return {"success": True, "data": result}
+
+            # Otherwise, agent made a tool call — update state and continue loop
+            if "tool_calls_log" in result:
+                agent_state["tool_calls_log"] = (
+                    agent_state.get("tool_calls_log", []) + result["tool_calls_log"]
+                )
+                agent_state["iteration"] = result.get("iteration", iteration + 1)
+                logger.info("agent_loop_continue", agent=agent_name,
+                            task_id=task["task_id"], iteration=iteration,
+                            tool=result["tool_calls_log"][-1].get("tool", ""))
+
+        # Max iterations reached — return what we have
+        logger.warning("agent_max_iterations", agent=agent_name, task_id=task["task_id"])
         return {"success": True, "data": result}
     except Exception as e:
         logger.error("agent_task_failed", task_id=task["task_id"],
@@ -272,9 +303,9 @@ def _merge_final_results(task_results: dict[str, dict], state: dict) -> dict:
 
         data = result.get("data", {})
         if isinstance(data, dict):
-            # Tool results: extract product data
-            if "data" in data and isinstance(data["data"], list):
-                products = data["data"]
+            # Tool results: extract product data (supports both "data" and "results" keys)
+            products = data.get("data") or data.get("results")
+            if isinstance(products, list):
                 for p in products:
                     pid = p.get("product_id", "")
                     if pid and pid not in {r.get("product_id") for r in all_search_results}:
@@ -299,6 +330,28 @@ def _merge_final_results(task_results: dict[str, dict], state: dict) -> dict:
 
     merged["search_results"] = all_search_results
     merged["recommendations"] = all_recommendations
+
+    # If agent used selection-only mode, extract product data from tool_calls_log
+    if merged["selected_product_ids"] and not merged["search_results"]:
+        selected_ids = set(merged["selected_product_ids"])
+        for tid, result in task_results.items():
+            if not result.get("success", False):
+                continue
+            data = result.get("data", {})
+            if not isinstance(data, dict):
+                continue
+            # Check tool_calls_log for product_search results
+            for entry in data.get("tool_calls_log", []):
+                tool_result = entry.get("result", {})
+                if isinstance(tool_result, dict):
+                    inner_data = tool_result.get("data", {})
+                    if isinstance(inner_data, dict):
+                        products = inner_data.get("results") or inner_data.get("data")
+                        if isinstance(products, list):
+                            for p in products:
+                                pid = p.get("product_id", "")
+                                if pid and pid in selected_ids:
+                                    merged["search_results"].append(p)
 
     # Use the last agent response as final_response, or combine
     if agent_responses:
