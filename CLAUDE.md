@@ -6,7 +6,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ShopMesh — 基于 LangGraph 的智能导购系统，**双语言微服务架构**：Java 控制面（Auth/CRUD）+ Python Agent 引擎（LangGraph/Tools/Memory）。通过 Traefik 网关路径级分流，RabbitMQ 异步通信。
 
-**当前阶段**: Phase 4 完成（Agent 生产化），进入 Phase 5（安全体系）。
+**当前阶段**: Phase 5（安全体系）。Agent 架构优化已完成。
+
+## Architecture Optimization (已完成)
+
+基于 `docs/references/learn-claude-code/` S01-S20 对比分析，已完成六项架构优化：
+
+| 模块 | 文件 | 说明 |
+|------|------|------|
+| P0-1 Error Recovery | `src/graph/specialized_agents.py` | 指数退避重试、prompt_too_long 恢复、fallback 模型 |
+| P0-2 Subagent 隔离 | `src/graph/dag_executor.py` | 精简状态传递、30 轮安全限制、禁止递归 |
+| P1-1 Task 认领 | `src/graph/task_store.py`, `orchestrator.py` | 硬编码 missing_fields 检查、Redis DAG 持久化 |
+| P1-2 Context Compact | `src/memory/context_compactor.py` | 四层压缩管线 + 熔断器 |
+| P2-1 Hooks 系统 | `src/graph/hooks.py`, `builtin_hooks.py` | 四个事件点、可扩展钩子机制 |
+| P2-2 Nag Reminder | `src/graph/specialized_agents.py` | 连续 3 轮无工具调用时注入提醒 |
 
 ## Tech Stack
 
@@ -50,7 +63,10 @@ python scripts/generate_mock_products.py --count 5000 --output data/mock_product
 ```bash
 cd shopmesh-java
 mvn test                    # all tests (19 pass, uses H2 in-memory)
-mvn spring-boot:run         # local dev (requires PostgreSQL)
+
+# Build and run (jar 方式启动，避免 spring-boot:run 文件锁问题)
+mvn clean package -DskipTests
+java -jar target/shopmesh-api-0.1.0.jar   # http://localhost:18080
 ```
 
 ### Frontend (frontend/)
@@ -73,7 +89,7 @@ docker compose up -d        # detached
 
 ```
 Client → Traefik (:80)
-  ├── /api/auth/*, /api/auth/api-keys/*, /.well-known/jwks.json  → Java :8080
+  ├── /api/auth/*, /api/auth/api-keys/*, /.well-known/jwks.json  → Java :18080
   └── /api/chat/*, /api/conversations/*, /api/behavior/*, /api/tasks/*  → Python :9000
 ```
 
@@ -109,7 +125,7 @@ preprocess (intent + entity + memory 并行)
 | constraint_relaxation | 放宽检索约束 |
 | ask_clarification | 缺失槽位检查+追问 |
 
-Tools 通过 `ToolDef` 注册到 `tool_registry`，`execute_tool()` 是统一入口（含 permission + rate limit 检查）。
+Tools 通过 `ToolDef` 注册到 `tool_registry`，`execute_tool()` 是统一入口（含 permission + rate limit + hooks 检查）。
 
 ### Guardrails 四层防护 (src/security/)
 
@@ -154,6 +170,33 @@ State 只存工作记忆，执行日志走 structlog。
 ### HITL (Human-in-the-Loop) Order Flow
 
 LangGraph `interrupt()` 机制：prepare_order → interrupt("请确认下单") → 前端 POST /api/chat/resume → confirm/cancel。
+
+### Hooks 系统 (src/graph/hooks.py)
+
+四个事件点，支持可扩展的钩子机制：
+- `pre_tool_use`: 工具执行前（权限检查、日志）
+- `post_tool_use`: 工具执行后（输出检查、副作用）
+- `pre_llm_call`: LLM 调用前（上下文注入）
+- `post_llm_call`: LLM 调用后（统计）
+
+通过 `register_hook(event, callback)` 注册，`trigger_hooks(event, **kwargs)` 触发。Hook 返回 `HookResult(block=True)` 可阻止执行。
+
+### Context Compact (src/memory/context_compactor.py)
+
+四层压缩管线（便宜的先跑，贵的后跑）：
+- L1 snip_compact: 截断旧消息，保留头尾（0 API）
+- L2 micro_compact: 旧 tool_result 替换为占位符（0 API）
+- L3 tool_result_budget: 大输出持久化到 Redis（0 API）
+- L4 compact_history: LLM 生成摘要（1 API）
+
+`CompactionCircuitBreaker` 熔断器：连续 3 次压缩失败后停止重试。
+
+### Task Store (src/graph/task_store.py)
+
+DAG 任务的 Redis 持久化，支持跨会话恢复：
+- Key: `dag:{session_id}:{dag_id}`, `task:{session_id}:{dag_id}:{task_id}`
+- TTL: 24 小时
+- 语义: claim_task（依赖阻塞检查）、complete_task（解锁下游）
 
 ## Development Guidelines
 
