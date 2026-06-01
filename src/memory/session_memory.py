@@ -157,6 +157,34 @@ class SessionMemory:
         """Delete all memory for this session."""
         await self._redis.delete(self._msg_key(), self._summary_key())
 
+    # ── L3: Tool Result Persistence ──
+
+    async def persist_tool_result(self, tool_use_id: str, content: str,
+                                   preview_chars: int = 2000) -> str:
+        """Persist large tool result to Redis, return preview with marker.
+
+        Args:
+            tool_use_id: Unique identifier for the tool call
+            content: Full tool result content
+            preview_chars: Number of characters to keep in preview
+
+        Returns:
+            Preview string with persistence marker
+        """
+        key = f"tool_result:{self.session_id}:{tool_use_id}"
+        await self._redis.set(key, content, ex=MSG_TTL)
+        preview = content[:preview_chars]
+        logger.info("tool_result_persisted",
+                     session_id=self.session_id,
+                     tool_use_id=tool_use_id,
+                     content_len=len(content))
+        return f"{preview}\n[完整结果已持久化，ID: {tool_use_id}]"
+
+    async def get_tool_result(self, tool_use_id: str) -> str | None:
+        """Retrieve persisted tool result from Redis."""
+        return await self._redis.get(
+            f"tool_result:{self.session_id}:{tool_use_id}")
+
 
 def get_session_memory(session_id: str, tenant_id: str = "") -> SessionMemory:
     """Factory for SessionMemory."""

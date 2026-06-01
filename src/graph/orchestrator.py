@@ -9,6 +9,8 @@ Fallback: if LLM decomposition fails, falls back to deterministic intent→task 
 
 import json
 import re
+import time
+import random
 
 from src.agents.task_templates import (
     TASK_TEMPLATES,
@@ -54,6 +56,10 @@ def _build_orchestrator_prompt(
 
     templates_text = "\n".join(template_descriptions)
 
+    # Format missing critical fields
+    missing_fields = entities.get("missing_critical_fields", [])
+    missing_fields_text = ", ".join(missing_fields) if missing_fields else "无"
+
     # Format memory info
     memory_text = "无"
     if memory_chunks:
@@ -81,6 +87,7 @@ def _build_orchestrator_prompt(
 用户意图: {user_goals}
 提取的实体:
 {entities_text}
+缺失关键字段: {missing_fields_text}
 记忆中的商品:
 {memory_text}
 
@@ -104,6 +111,7 @@ def _build_orchestrator_prompt(
 5. type:agent 的 task 不需要填 args（由 agent 自行决定）
 6. 如果只有一个简单意图，直接返回一个无依赖的 task 即可
 7. args 中的 product_ids 如果来自记忆，用 "memory" 标记，执行时会自动替换
+8. **如果缺失关键字段（missing_fields 不为"无"），不要创建 market_search task！直接创建一个无依赖的 recommend task，它会自动处理追问。追问完成后再搜索更准确。**
 
 ## 示例
 用户说"上次看的那款降价了吗 + 推荐更好的":
@@ -310,9 +318,11 @@ async def node_orchestrator(state: dict) -> dict:
     1. Try deterministic mapping first (INTENT_TO_TASKS)
     2. If not all goals map deterministically, use LLM to decompose
     3. Validate DAG, fallback to single-agent if invalid
+    4. Persist DAG to Redis for cross-session recovery
 
     Returns dict to merge into AgentState:
         task_dag: list[dict] — the task DAG
+        dag_id: str — unique ID for this DAG execution
     """
     user_goals = state.get("user_goals", [])
     entities = state.get("entities", {})
@@ -330,7 +340,7 @@ async def node_orchestrator(state: dict) -> dict:
         logger.info("orchestrator_deterministic",
                      user_goals=user_goals,
                      task_count=len(dag))
-        return {"task_dag": dag}
+        return await _persist_and_return(dag, state)
 
     # Step 2: LLM decomposition
     logger.info("orchestrator_llm_decompose", user_goals=user_goals)
@@ -350,7 +360,7 @@ async def node_orchestrator(state: dict) -> dict:
         dag = _parse_task_dag(content)
         if dag is None:
             logger.warning("orchestrator_parse_failed", content=content[:300])
-            return {"task_dag": _fallback_dag(user_goals, state)}
+            return await _persist_and_return(_fallback_dag(user_goals, state), state)
 
         # Resolve args placeholders
         for task in dag:
@@ -360,20 +370,59 @@ async def node_orchestrator(state: dict) -> dict:
         is_valid, error = _validate_dag(dag)
         if not is_valid:
             logger.warning("orchestrator_invalid_dag", error=error)
-            return {"task_dag": _fallback_dag(user_goals, state)}
+            return await _persist_and_return(_fallback_dag(user_goals, state), state)
 
         logger.info("orchestrator_llm_success",
                      task_count=len(dag),
                      tasks=[t["task_id"] for t in dag])
-        return {"task_dag": dag}
+        return await _persist_and_return(dag, state)
 
     except Exception as e:
         logger.error("orchestrator_error", error=str(e))
-        return {"task_dag": _fallback_dag(user_goals, state)}
+        return await _persist_and_return(_fallback_dag(user_goals, state), state)
+
+
+async def _persist_and_return(dag: list[dict], state: dict) -> dict:
+    """Persist DAG to Redis and return with dag_id."""
+    dag_id = f"dag_{int(time.time())}_{random.randint(0, 9999):04d}"
+    session_id = state.get("session_id", state.get("user_id", "default_user"))
+
+    try:
+        from src.graph.task_store import get_task_store
+        task_store = get_task_store()
+        await task_store.save_dag(session_id, dag_id, dag)
+    except Exception as e:
+        logger.warning("dag_persist_failed", error=str(e))
+        # Continue without persistence — DAG execution still works
+        dag_id = None
+
+    result = {"task_dag": dag}
+    if dag_id:
+        result["dag_id"] = dag_id
+    return result
 
 
 def _build_deterministic_dag(task_ids: list[str], state: dict) -> list[dict]:
-    """Build a DAG from deterministic task IDs with known dependency patterns."""
+    """Build a DAG from deterministic task IDs with known dependency patterns.
+
+    Hard-coded rule: if missing_critical_fields exist, force clarification
+    by returning only a recommend task with _force_clarification flag.
+    """
+    # Hard-coded missing_fields check (deterministic, not LLM-dependent)
+    missing_fields = state.get("entities", {}).get("missing_critical_fields", [])
+    if missing_fields:
+        logger.info("deterministic_missing_fields",
+                     fields=missing_fields,
+                     original_tasks=task_ids)
+        return [{
+            "task_id": "recommend",
+            "depends_on": [],
+            "args": {
+                "_force_clarification": True,
+                "_missing_fields": missing_fields,
+            },
+        }]
+
     dag = []
 
     # Known dependency patterns

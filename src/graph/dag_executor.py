@@ -6,6 +6,8 @@ Phase 2: asyncio.gather parallelism for independent tasks.
 Each task is either:
 - type:tool → direct tool call (no LLM)
 - type:agent → ReAct loop with tool subset
+
+P1-1: Integrated TaskStore for claim/complete semantics and cross-session persistence.
 """
 
 import asyncio
@@ -89,10 +91,13 @@ async def _execute_agent_task(
     state: dict,
     prior_results: dict,
 ) -> dict:
-    """Execute a type:agent task by running the agent's ReAct loop.
+    """Execute a type:agent task with isolated state (Subagent pattern).
 
-    Injects prior task results into the agent's context so it can use them.
-    Loops until the agent generates a final answer (no tool calls) or hits max iterations.
+    Isolation rules (from s06_subagent):
+    1. Subagent receives only essential fields, not full parent state
+    2. 30-turn safety limit to prevent infinite loops
+    3. Only final summary is returned, intermediate state is discarded
+    4. No recursive agent spawning (enforced by tool subset)
     """
     from src.agents.agent_config import get_agent_config
     from src.graph.specialized_agents import _run_agent_loop
@@ -102,19 +107,37 @@ async def _execute_agent_task(
         return {"success": False, "error": f"No agent for task {task['task_id']}"}
 
     agent_name = tmpl.agent
-    max_iterations = state.get("max_iterations", 5)
+    _MAX_SUBAGENT_TURNS = 30  # Safety limit for subagent
 
-    # Build enriched state with prior task results
+    # ── Build isolated state (NOT **state) ──
+    # Only pass essential fields to prevent state pollution
     agent_state = {
-        **state,
+        # Context: recent messages only (last 3 user messages)
+        "messages": _extract_recent_messages(state.get("messages", []), max_count=3),
+        # Entities: read-only copy
+        "entities": dict(state.get("entities", {})),
+        # User/session identifiers
+        "user_id": state.get("user_id", "default_user"),
+        "session_id": state.get("session_id", ""),
+        # Prior task results for context injection
         "_prior_task_results": prior_results,
         "_task_args": task_args,
-        "iteration": 0,  # reset iteration for each agent task
+        # Agent execution state (fresh for each subagent)
+        "iteration": 0,
+        "max_iterations": min(state.get("max_iterations", 5), 10),  # Cap at 10
         "tool_calls_log": [],
+        # Memory context (read-only)
+        "memory_chunks": list(state.get("memory_chunks", [])),
+        "user_profile": dict(state.get("user_profile", {})),
     }
 
+    logger.info("subagent_isolated", agent=agent_name, task_id=task["task_id"],
+                original_msg_count=len(state.get("messages", [])),
+                isolated_msg_count=len(agent_state["messages"]))
+
     try:
-        for iteration in range(max_iterations):
+        result = None
+        for iteration in range(_MAX_SUBAGENT_TURNS):
             logger.info("agent_loop_iteration", agent=agent_name,
                         task_id=task["task_id"], iteration=iteration)
             try:
@@ -129,9 +152,10 @@ async def _execute_agent_task(
             if "final_response" in result:
                 logger.info("agent_loop_done", agent=agent_name,
                             task_id=task["task_id"], iteration=iteration)
+                # Return only the final result, not the agent_state
                 return {"success": True, "data": result}
 
-            # Otherwise, agent made a tool call — update state and continue loop
+            # Otherwise, agent made a tool call — update isolated state and continue
             if "tool_calls_log" in result:
                 agent_state["tool_calls_log"] = (
                     agent_state.get("tool_calls_log", []) + result["tool_calls_log"]
@@ -141,13 +165,61 @@ async def _execute_agent_task(
                             task_id=task["task_id"], iteration=iteration,
                             tool=result["tool_calls_log"][-1].get("tool", ""))
 
-        # Max iterations reached — return what we have
-        logger.warning("agent_max_iterations", agent=agent_name, task_id=task["task_id"])
-        return {"success": True, "data": result}
+        # Safety limit reached
+        logger.warning("subagent_max_turns", agent=agent_name, task_id=task["task_id"],
+                       max_turns=_MAX_SUBAGENT_TURNS)
+        return {"success": True, "data": result or {"final_response": "任务执行超时，请重试。"}}
+
     except Exception as e:
         logger.error("agent_task_failed", task_id=task["task_id"],
                      agent=agent_name, error=str(e))
         return {"success": False, "error": str(e)}
+
+
+def _extract_recent_messages(messages: list[dict], max_count: int = 3) -> list[dict]:
+    """Extract recent user messages for subagent context.
+
+    Keeps system prompt (if present) + last N user messages.
+    Discards assistant responses and tool call history to prevent context pollution.
+    """
+    if not messages:
+        return []
+
+    result = []
+    user_count = 0
+
+    # Iterate in reverse to get most recent user messages
+    for msg in reversed(messages):
+        role = msg.get("role", "")
+        if role == "user":
+            user_count += 1
+            if user_count <= max_count:
+                result.insert(0, msg)
+        elif role == "system":
+            # Always keep system prompt
+            result.insert(0, msg)
+            break
+
+    return result
+
+
+def _extract_result_summary(result: dict) -> str:
+    """Extract a short summary from task result for TaskStore."""
+    if not result.get("success", False):
+        return result.get("error", "Failed")[:200]
+
+    data = result.get("data", {})
+    if isinstance(data, dict):
+        # For agent tasks with final_response
+        if "final_response" in data:
+            return data["final_response"][:200]
+        # For tool tasks with results
+        if "results" in data or "data" in data:
+            products = data.get("results") or data.get("data")
+            if isinstance(products, list):
+                return f"{len(products)} products found"
+
+    return "Completed"
 
 
 def _collect_dep_results(
@@ -208,6 +280,8 @@ async def node_dag_executor(state: dict) -> dict:
     Reads task_dag from state, executes tasks in topological order,
     collects results into task_results.
 
+    P1-1: Uses TaskStore for claim/complete semantics when dag_id is present.
+
     Returns dict to merge into AgentState:
         task_results: dict[str, dict] — results keyed by task_id
         final_response: str — merged response from all agent tasks
@@ -219,6 +293,17 @@ async def node_dag_executor(state: dict) -> dict:
     if not dag:
         logger.warning("dag_executor_empty_dag")
         return {"task_results": {}, "final_response": "抱歉，任务规划为空。"}
+
+    # Initialize TaskStore if dag_id is present (P1-1 persistence)
+    dag_id = state.get("dag_id")
+    session_id = state.get("session_id", state.get("user_id", "default_user"))
+    task_store = None
+    if dag_id:
+        try:
+            from src.graph.task_store import get_task_store
+            task_store = get_task_store()
+        except Exception as e:
+            logger.warning("task_store_init_failed", error=str(e))
 
     try:
         layers = topological_sort(dag)
@@ -250,6 +335,17 @@ async def node_dag_executor(state: dict) -> dict:
                 task_results[tid] = {"success": False, "error": f"Unknown template: {tid}"}
                 continue
 
+            # Claim task if TaskStore is available (P1-1)
+            if task_store:
+                claimed = await task_store.claim_task(session_id, dag_id, tid)
+                if not claimed:
+                    logger.info("dag_executor_task_blocked", task_id=tid)
+                    task_results[tid] = {
+                        "success": False,
+                        "error": f"Task {tid} blocked by dependencies"
+                    }
+                    continue
+
             dep_results = _collect_dep_results(task, task_results)
             merged_args = _merge_task_args(task, dep_results, state)
 
@@ -270,11 +366,23 @@ async def node_dag_executor(state: dict) -> dict:
                     logger.error("dag_executor_task_exception",
                                  task_id=tid, error=str(result))
                     task_results[tid] = {"success": False, "error": str(result)}
+                    # Mark as failed in TaskStore
+                    if task_store:
+                        await task_store.complete_task(
+                            session_id, dag_id, tid, f"Error: {str(result)[:200]}")
                 else:
                     task_results[tid] = result
                     logger.info("dag_executor_task_done",
                                  task_id=tid,
                                  success=result.get("success", False))
+                    # Mark as completed in TaskStore (P1-1)
+                    if task_store:
+                        summary = _extract_result_summary(result)
+                        unblocked = await task_store.complete_task(
+                            session_id, dag_id, tid, summary)
+                        if unblocked:
+                            logger.info("dag_executor_tasks_unblocked",
+                                        completed=tid, unblocked=unblocked)
 
     # Merge results into state-compatible format
     return _merge_final_results(task_results, state)

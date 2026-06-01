@@ -6,10 +6,13 @@ Contains:
 - node_detail_compare_agent: unified detail + comparison agent
 - _run_agent_loop: shared ReAct loop parameterized by agent config
 - Schema validation + repair for structured JSON output
+- Error Recovery: max_tokens escalation, reactive compact, fallback model
 """
 
+import asyncio
 import json
 import re
+import random
 
 from src.agents.agent_config import (
     _ORDER_PLACEHOLDER,
@@ -30,6 +33,73 @@ logger = get_logger("specialized_agents")
 
 # Fields that the Agent may omit but are needed for ranking
 _INJECTABLE_FIELDS = ("soft_requirements", "hard_constraints", "gender", "brand")
+
+# ── Error Recovery Constants ──
+_ESCALATED_MAX_TOKENS = 64000
+_DEFAULT_MAX_TOKENS = 2048
+_MAX_RECOVERY_RETRIES = 3
+_MAX_RETRIES = 10
+_BASE_DELAY_MS = 500
+_MAX_CONSECUTIVE_529 = 3
+_CONTINUATION_PROMPT = (
+    "输出被截断，请直接继续 — 不要道歉，不要重复之前的内容。"
+    "从截断处继续完成任务。"
+)
+
+
+class RecoveryState:
+    """Track recovery attempts across the agent loop."""
+
+    def __init__(self):
+        self.has_escalated = False
+        self.recovery_count = 0
+        self.consecutive_529 = 0
+        self.has_attempted_reactive_compact = False
+        self.current_model: str | None = None  # None = use default
+
+
+def _retry_delay(attempt: int, retry_after: float | None = None) -> float:
+    """Exponential backoff with jitter. Retry-After takes priority."""
+    if retry_after:
+        return retry_after
+    base = min(_BASE_DELAY_MS * (2 ** attempt), 32000) / 1000
+    jitter = random.uniform(0, base * 0.25)
+    return base + jitter
+
+
+def _is_prompt_too_long_error(e: Exception) -> bool:
+    """Check whether an API error indicates prompt/context too long."""
+    msg = str(e).lower()
+    return (("prompt" in msg and "long" in msg)
+            or "prompt_is_too_long" in msg
+            or "context_length_exceeded" in msg
+            or "max_context_window" in msg)
+
+
+def _is_overloaded_error(e: Exception) -> bool:
+    """Check whether an API error indicates 529 overloaded."""
+    msg = str(e).lower()
+    return "529" in msg or "overloaded" in msg
+
+
+def _is_rate_limit_error(e: Exception) -> bool:
+    """Check whether an API error indicates 429 rate limit."""
+    msg = str(e).lower()
+    return "429" in msg or "ratelimit" in msg
+
+
+async def _reactive_compact(messages: list[dict]) -> list[dict]:
+    """Emergency compact — keep system prompt + last 5 messages."""
+    logger.warning("reactive_compact_triggered", original_count=len(messages))
+    # Keep system prompt (first message) + last 5 messages
+    if len(messages) <= 6:
+        return messages
+    system = messages[0]
+    tail = messages[-5:]
+    return [system,
+            {"role": "user",
+             "content": "[上下文压缩] 之前的对话已精简，请从当前状态继续。"},
+            *tail]
 
 
 # ──────────────────────────────────────────────
@@ -143,6 +213,19 @@ def _build_messages(state: dict, system_prompt: str) -> list[dict]:
     """
     messages = [{"role": "system", "content": system_prompt}]
 
+    # P1-1: Check for _force_clarification flag from deterministic missing_fields check
+    task_args = state.get("_task_args", {})
+    if task_args.get("_force_clarification"):
+        missing_fields = task_args.get("_missing_fields", [])
+        field_names = ", ".join(missing_fields)
+        clarification_msg = (
+            f"[系统指令] 用户缺少以下关键信息: {field_names}。\n"
+            f"你必须先调用 ask_clarification 工具询问这些信息，不要直接搜索商品。\n"
+            f"追问完成后，在下一轮再进行搜索。"
+        )
+        messages.append({"role": "user", "content": clarification_msg})
+        logger.info("force_clarification_injected", fields=missing_fields)
+
     # Inject prior task results from DAG executor as context
     prior_results = state.get("_prior_task_results", {})
     if prior_results:
@@ -236,9 +319,10 @@ async def _run_agent_loop(state: dict, agent_name: str) -> dict:
 
     1. Get agent config (tools, prompt, response_type)
     2. Build specialized system prompt
-    3. Call LLM with filtered tool schemas
-    4. Execute tool or parse final answer
-    5. Validate response schema, attempt repair on failure
+    3. Apply four-layer compaction pipeline (P1-2)
+    4. Call LLM with error recovery (max_tokens, prompt_too_long, 429/529)
+    5. Execute tool or parse final answer
+    6. Validate response schema, attempt repair on failure
     """
     _register_prompt_builders()
 
@@ -255,9 +339,149 @@ async def _run_agent_loop(state: dict, agent_name: str) -> dict:
 
     messages = _build_messages(state, system_prompt)
 
-    # Call LLM
-    llm = get_llm("react_agent")
-    response = await llm.chat(messages, tools=tool_schemas)
+    # ── P1-2: Initialize compaction pipeline ──
+    from src.memory.context_compactor import get_compactor, CompactionCircuitBreaker
+    session_id = state.get("session_id", state.get("user_id", ""))
+    compactor = get_compactor(session_id=session_id)
+    compaction_breaker = CompactionCircuitBreaker()
+
+    # ── P2-1: Import hooks ──
+    from src.graph.hooks import trigger_hooks
+
+    # ── P2-2: Nag reminder constants ──
+    _NAG_REMINDER_THRESHOLD = 3
+    _NAG_REMINDER_MSG = (
+        "请继续完成任务。如果需要更多信息，请调用 ask_clarification 工具。"
+        "如果任务已完成，请输出最终结果。"
+    )
+
+    # ── Error Recovery Loop ──
+    recovery = RecoveryState()
+    max_tokens = _DEFAULT_MAX_TOKENS
+    response = None
+    rounds_since_last_tool = 0  # P2-2: Track rounds without tool calls
+
+    for _retry in range(_MAX_RETRIES * 2):  # upper bound to prevent infinite loops
+        # ── P1-2: Apply compaction before each LLM call ──
+        if not compaction_breaker.is_open():
+            try:
+                messages = await compactor.apply_compaction(messages)
+            except Exception as e:
+                compaction_breaker.record_failure()
+                logger.warning("compaction_pipeline_failed",
+                                agent=agent_name, error=str(e))
+
+        # ── P2-1: Pre-LLM-call hooks ──
+        hook_result = await trigger_hooks("pre_llm_call", agent=agent_name, messages=messages)
+        if hook_result and hook_result.block:
+            return {
+                "final_response": hook_result.message,
+                "iteration": state.get("iteration", 0) + 1,
+            }
+
+        try:
+            llm = get_llm("react_agent")
+            response = await llm.chat(messages, tools=tool_schemas)
+            # Success — reset consecutive 529 counter
+            recovery.consecutive_529 = 0
+
+            # ── P2-1: Post-LLM-call hooks ──
+            await trigger_hooks("post_llm_call", agent=agent_name, response=response)
+
+        except Exception as e:
+            # Path 2: prompt_too_long → reactive compact (once)
+            if _is_prompt_too_long_error(e):
+                if not recovery.has_attempted_reactive_compact:
+                    messages[:] = await _reactive_compact(messages)
+                    recovery.has_attempted_reactive_compact = True
+                    logger.warning("reactive_compact_retry", agent=agent_name)
+                    continue
+                logger.error("prompt_too_long_unrecoverable", agent=agent_name)
+                return {
+                    "final_response": "抱歉，对话上下文过长，请重新开始对话。",
+                    "iteration": state.get("iteration", 0) + 1,
+                }
+
+            # Path 3: 529 overloaded → backoff + fallback model
+            if _is_overloaded_error(e):
+                recovery.consecutive_529 += 1
+                if recovery.consecutive_529 >= _MAX_CONSECUTIVE_529:
+                    from src.config import config as cfg_file
+                    fallback = cfg_file.get("llm", {}).get("fallback", {}).get("model")
+                    if fallback:
+                        recovery.current_model = fallback
+                        recovery.consecutive_529 = 0
+                        logger.warning("fallback_model_switch",
+                                       agent=agent_name, model=fallback)
+                    else:
+                        recovery.consecutive_529 = 0
+                        logger.warning("no_fallback_configured", agent=agent_name)
+                delay = _retry_delay(_retry)
+                logger.warning("529_backoff", agent=agent_name,
+                               delay=round(delay, 1), retry=_retry + 1)
+                await asyncio.sleep(delay)
+                continue
+
+            # Path 3: 429 rate limit → backoff
+            if _is_rate_limit_error(e):
+                delay = _retry_delay(_retry)
+                logger.warning("429_backoff", agent=agent_name,
+                               delay=round(delay, 1), retry=_retry + 1)
+                await asyncio.sleep(delay)
+                continue
+
+            # Unrecoverable error
+            logger.error("llm_unrecoverable_error", agent=agent_name,
+                         error_type=type(e).__name__, error=str(e)[:200])
+            return {
+                "final_response": "抱歉，AI 服务暂时不可用，请稍后再试。",
+                "iteration": state.get("iteration", 0) + 1,
+            }
+
+        # ── Path 1: max_tokens → escalate or continue ──
+        stop_reason = response.get("stop_reason", "")
+        if stop_reason == "max_tokens":
+            if not recovery.has_escalated:
+                max_tokens = _ESCALATED_MAX_TOKENS
+                recovery.has_escalated = True
+                logger.warning("max_tokens_escalation", agent=agent_name,
+                               new_max=max_tokens)
+                continue  # retry same request with more tokens
+            # Still truncated: save output + continuation prompt
+            content = response.get("content", "")
+            if content:
+                messages.append({"role": "assistant", "content": content})
+            if recovery.recovery_count < _MAX_RECOVERY_RETRIES:
+                messages.append({"role": "user", "content": _CONTINUATION_PROMPT})
+                recovery.recovery_count += 1
+                logger.warning("max_tokens_continuation", agent=agent_name,
+                               count=recovery.recovery_count)
+                continue
+            logger.warning("max_tokens_recovery_limit", agent=agent_name)
+            # Fall through with whatever we have
+
+        # ── P2-2: Nag reminder — inject if no tool calls for N rounds ──
+        tool_calls_check = response.get("tool_calls") if response else None
+        if not tool_calls_check:
+            rounds_since_last_tool += 1
+            if rounds_since_last_tool >= _NAG_REMINDER_THRESHOLD:
+                logger.info("nag_reminder_triggered",
+                             agent=agent_name,
+                             rounds_without_tool=rounds_since_last_tool)
+                messages.append({"role": "user", "content": _NAG_REMINDER_MSG})
+                rounds_since_last_tool = 0
+                continue  # Re-enter loop with reminder
+        else:
+            rounds_since_last_tool = 0  # Reset on tool call
+
+        break  # Normal completion or exhausted retries
+
+    if response is None:
+        return {
+            "final_response": "抱歉，处理过程中出现问题，请稍后再试。",
+            "iteration": state.get("iteration", 0) + 1,
+        }
+
     logger.info("llm_response", agent=agent_name,
                  has_tool_calls=bool(response.get("tool_calls")),
                  content_len=len(response.get("content", "")),
@@ -332,14 +556,17 @@ async def _run_agent_loop(state: dict, agent_name: str) -> dict:
 
     if parsed:
         logger.info("agent_schema_valid", agent=agent_name, response_type=cfg.response_type)
-    else:
-        # Attempt repair if parse failed
+    elif "{" in content:
+        # Only attempt repair if the response looks like it contains JSON
         logger.info("agent_schema_invalid", agent=agent_name, response_type=cfg.response_type)
         parsed = await _attempt_repair(content, cfg.response_type, messages, llm, tool_schemas)
         if parsed:
             logger.info("agent_schema_repaired", agent=agent_name)
         else:
             logger.warning("agent_schema_repair_failed", agent=agent_name)
+    else:
+        # Natural language response (clarification, explanation) — skip repair
+        logger.info("agent_natural_response", agent=agent_name, content_len=len(content))
 
     # Output guard: validate recommendations against search results
     if parsed and isinstance(parsed, dict):

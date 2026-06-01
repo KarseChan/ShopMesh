@@ -1,4 +1,7 @@
-"""Tool Executor — unified entry point for Agent tool calls with error handling."""
+"""Tool Executor — unified entry point for Agent tool calls with error handling.
+
+P2-1: Integrated hooks system for pre/post tool execution events.
+"""
 
 from src.auth.context import get_context_user_id
 from src.observability.logger import get_logger
@@ -94,9 +97,13 @@ def _extract_result_for_log(tool_name: str, result) -> dict:
 async def execute_tool(name: str, args: dict) -> dict:
     """Execute a tool by name with error handling and logging.
 
+    P2-1: Integrated hooks for pre/post tool execution events.
+
     Returns:
         {"success": True, "data": result} or {"success": False, "error": str}
     """
+    from src.graph.hooks import trigger_hooks
+
     tool = get_tool_by_name(name)
     if tool is None:
         logger.error("tool_not_found", tool=name)
@@ -117,6 +124,12 @@ async def execute_tool(name: str, args: dict) -> dict:
         logger.warning("tool_rate_limited", tool=name, user_id=user_id, reason=str(e))
         return {"success": False, "error": "操作过于频繁，请稍后再试"}
 
+    # P2-1: Pre-tool-use hooks
+    hook_result = await trigger_hooks("pre_tool_use", tool_name=name, args=args)
+    if hook_result and hook_result.block:
+        logger.info("tool_blocked_by_hook", tool=name, message=hook_result.message)
+        return {"success": False, "error": hook_result.message}
+
     args_log = _extract_args_for_log(name, args)
 
     try:
@@ -127,6 +140,10 @@ async def execute_tool(name: str, args: dict) -> dict:
 
         result_log = _extract_result_for_log(name, result)
         logger.info("tool_executed", tool=name, args=args_log, result=result_log)
+
+        # P2-1: Post-tool-use hooks
+        await trigger_hooks("post_tool_use", tool_name=name, args=args, result=result)
+
         return {"success": True, "data": result}
     except Exception as e:
         logger.error("tool_failed", tool=name, args=args_log, error=str(e))
