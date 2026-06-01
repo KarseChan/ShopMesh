@@ -6,6 +6,7 @@ These are low-risk, structured tasks that should always execute deterministicall
 
 import asyncio
 
+from src.config import config
 from src.agents.clarification_parser import parse_clarification_answer
 from src.agents.clarification_router import route_clarification
 from src.agents.disambiguator import disambiguate
@@ -88,9 +89,32 @@ def _detect_task_switch(current: dict, previous: dict) -> bool:
 
 
 async def _run_normal_preprocessing(user_input: str, user_id: str, state: dict) -> dict:
-    """Path A: normal intent + entity + memory + session (parallel)."""
-    intent_task = classify_intent(user_input)
-    entity_task = extract_entities(user_input)
+    """Path A: normal intent + entity + memory + session (parallel).
+
+    Optimization: try semantic router first. If it hits (confidence >= threshold),
+    only call entity extraction LLM (1 call). If it misses, use combined
+    entity+intent LLM (1 call instead of 2).
+    """
+    from src.router import semantic_router
+    from src.agents.entity_extractor import extract_entities_and_intent
+
+    threshold = config.get("router", {}).get("semantic_threshold", 0.80)
+
+    # Fast path: semantic router for intent (no LLM)
+    sem_intent, sem_confidence = await semantic_router.classify(user_input)
+
+    if sem_intent and sem_confidence >= threshold:
+        # Semantic router hit: only need entity extraction LLM
+        logger.info("intent_resolved",
+                     user_goals=sem_intent.get("user_goals", []),
+                     task_type=sem_intent.get("task_type"),
+                     confidence=sem_confidence, source="semantic")
+        entity_task = extract_entities(user_input)
+        combined_task = None
+    else:
+        # Semantic router miss: use combined entity+intent LLM (1 call)
+        entity_task = None
+        combined_task = extract_entities_and_intent(user_input)
 
     prev_category = state.get("entities", {}).get("category")
     do_recall, recall_reason = await should_recall_dual(
@@ -112,11 +136,17 @@ async def _run_normal_preprocessing(user_input: str, user_id: str, state: dict) 
     # Load L3 user profile (sync → async wrapper)
     profile_task = asyncio.to_thread(get_global_profile, user_id)
 
-    intent_result, entities, memories, window, summary, user_profile = await asyncio.gather(
-        intent_task, entity_task, memory_task, window_task, summary_task, profile_task
-    )
-
-    intent, confidence, source = intent_result
+    # Gather with either entity-only or combined entity+intent task
+    if combined_task is not None:
+        combined_result, memories, window, summary, user_profile = await asyncio.gather(
+            combined_task, memory_task, window_task, summary_task, profile_task
+        )
+        entities, intent, confidence, source = combined_result
+    else:
+        entities, memories, window, summary, user_profile = await asyncio.gather(
+            entity_task, memory_task, window_task, summary_task, profile_task
+        )
+        intent, confidence, source = sem_intent, sem_confidence, "semantic"
 
     # Context carry-forward: inherit missing fields from previous turn's entities
     prev_entities = state.get("entities", {})
