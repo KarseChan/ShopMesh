@@ -53,7 +53,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "16379:6379"  # 使用高端口避免 Hyper-V 端口保留冲突
     volumes:
       - redisdata:/data
     healthcheck:
@@ -67,7 +67,7 @@ services:
   qdrant:
     image: qdrant/qdrant:v1.12.1
     ports:
-      - "6336:6333"
+      - "16336:6333"  # 使用高端口避免 Hyper-V 端口保留冲突
     volumes:
       - qdrantdata:/qdrant/storage
     healthcheck:
