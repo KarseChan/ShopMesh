@@ -20,6 +20,7 @@ async def product_search(
     semantic_query: str,
     top_k: int = 10,
     max_results: int = 10,
+    memory_signals: dict | None = None,
 ) -> dict:
     """One-stop product retrieval: hybrid search + multi-objective ranking.
 
@@ -46,7 +47,7 @@ async def product_search(
             products[i]["product_id"] = r.get("id", "")
 
     # Step 3: Multi-objective ranking
-    ranked = rank(products, search_scores=search_scores, entities=entities)
+    ranked = rank(products, search_scores=search_scores, entities=entities, memory_signals=memory_signals)
 
     # Step 4: Cap results to save LLM tokens
     ranked = ranked[:max_results]
@@ -117,6 +118,10 @@ tool_registry.register(ToolDef(
                 "type": "integer",
                 "description": "最终返回数量（排序后截断），默认 5。推荐场景用 5，搜索场景可用 10。",
                 "default": 5,
+            },
+            "memory_signals": {
+                "type": "object",
+                "description": "记忆信号（positive_interest, negative_feedback, stable_preference, recent_task_memory），用于个性化排序",
             },
         },
         "required": ["entities", "semantic_query"],

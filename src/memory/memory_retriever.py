@@ -56,6 +56,7 @@ async def _ensure_collection() -> str:
         await store.create_payload_index(MEMORY_COLLECTION, "user_id", "keyword")
         await store.create_payload_index(MEMORY_COLLECTION, "timestamp", "float")
         await store.create_payload_index(MEMORY_COLLECTION, "category", "keyword")
+        await store.create_payload_index(MEMORY_COLLECTION, "memory_signal_type", "keyword")
         logger.info("memory_collection_created", collection=MEMORY_COLLECTION)
     except Exception:
         pass  # Collection may already exist
@@ -72,6 +73,7 @@ async def write_chunk(
     intent: str | None = None,
     category: str | None = None,
     importance: float = 1.0,
+    memory_signal_type: str | None = None,
 ) -> None:
     """Write a dialog chunk to the unified memory collection.
 
@@ -105,6 +107,7 @@ async def write_chunk(
         "category": category or "",
         "timestamp": time.time(),
         "importance": importance,
+        "memory_signal_type": memory_signal_type or "",
         "text": text,
     }
 
@@ -157,6 +160,7 @@ async def write_chunk_with_contradiction_awareness(
     intent: str | None = None,
     category: str | None = None,
     importance: float = 1.0,
+    memory_signal_type: str | None = None,
 ) -> None:
     """Write chunk with contradiction detection.
 
@@ -197,6 +201,7 @@ async def write_chunk_with_contradiction_awareness(
         intent=intent,
         category=cat,
         importance=importance,
+        memory_signal_type=memory_signal_type,
     )
 
 
@@ -317,6 +322,7 @@ async def recall(
                 "category": payload.get("category", ""),
                 "days_old": round(days_elapsed, 1),
                 "importance": importance,
+                "memory_signal_type": payload.get("memory_signal_type", ""),
             })
 
     # Re-sort by decayed score (may differ from Qdrant's original ranking)

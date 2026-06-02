@@ -130,3 +130,13 @@ def get_messages(user_id: str, conversation_id: str, limit: int = 50) -> list[di
     except Exception as e:
         logger.warning("get_messages_failed", error=str(e))
         return []
+
+
+def get_recent_turns(user_id: str, conversation_id: str, limit: int = 10) -> list[dict]:
+    """Get recent messages formatted for window recovery.
+
+    Same format as SessionMemory.get_window() — [{role, content}, ...].
+    limit is in messages (not turns), default 10 = 5 turns.
+    """
+    messages = get_messages(user_id, conversation_id, limit=limit)
+    return [{"role": m["role"], "content": m["content"]} for m in messages]

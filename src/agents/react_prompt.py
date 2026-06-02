@@ -44,6 +44,7 @@ _SYSTEM_TEMPLATE = """你是一个智能导购 Agent。系统已经为你完成�
 - 严禁凭空编造商品信息，所有推荐必须基于工具返回的真实数据
 
 重要：调用 product_search 时，entities 参数必须使用上面"提取的实体"中的完整实体对象，不要自行重建或省略字段。soft_requirements、hard_constraints、gender 等字段对排序至关重要。
+如果系统提供了 memory_signals，调用 product_search 或 multi_query_search 时请传入 memory_signals 参数以获得个性化排序（历史关注商品加权、负面反馈降权）。
 
 Final Answer 格式：
 当你完成检索并准备推荐商品时，必须输出 JSON 格式（不要输出其他文字）：

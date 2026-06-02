@@ -153,6 +153,38 @@ class SessionMemory:
                            reason="head_changed_during_compression")
             return None
 
+    async def rebuild_window(self, messages: list[dict]) -> None:
+        """Rebuild Redis sliding window from recovered messages.
+
+        Takes [{role, content}, ...] format (same as get_window output).
+        Stores as user/assistant pairs via RPUSH, sets TTL.
+        Skips unpaired trailing user message.
+        """
+        if not messages:
+            return
+
+        pairs = []
+        i = 0
+        while i + 1 < len(messages):
+            if messages[i]["role"] == "user" and messages[i + 1]["role"] == "assistant":
+                pair = json.dumps(
+                    {"user": messages[i]["content"], "assistant": messages[i + 1]["content"]},
+                    ensure_ascii=False,
+                )
+                pairs.append(pair)
+                i += 2
+            else:
+                i += 1
+
+        if not pairs:
+            return
+
+        key = self._msg_key()
+        await self._redis.delete(key)
+        await self._redis.rpush(key, *pairs)
+        await self._redis.expire(key, MSG_TTL)
+        logger.info("window_rebuilt", session_id=self.session_id, pairs=len(pairs))
+
     async def clear(self) -> None:
         """Delete all memory for this session."""
         await self._redis.delete(self._msg_key(), self._summary_key())

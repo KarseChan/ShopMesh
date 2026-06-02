@@ -1,7 +1,7 @@
 """T5.3 End-to-end Agent tests — full graph execution with mocked LLM."""
 
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 class TestE2EAgentGraph:
@@ -60,7 +60,8 @@ class TestE2EAgentGraph:
             mock_get_llm.return_value = mock_llm
 
             # Also mock postprocessing memory write to avoid Qdrant calls
-            with patch("src.graph.postprocessing.write_chunk", new_callable=AsyncMock):
+            with patch("src.tasks.memory_tasks.write_vector_memory") as mock_write:
+                mock_write.delay = MagicMock()
                 result = await graph.ainvoke(initial_state, config=config)
 
         assert result["final_response"] is not None
@@ -108,7 +109,8 @@ class TestE2EAgentGraph:
             mock_llm.chat = AsyncMock(side_effect=mock_chat)
             mock_get_llm.return_value = mock_llm
 
-            with patch("src.graph.postprocessing.write_chunk", new_callable=AsyncMock):
+            with patch("src.tasks.memory_tasks.write_vector_memory") as mock_write:
+                mock_write.delay = MagicMock()
                 result = await graph.ainvoke(initial_state, config=config)
 
         assert result["final_response"] is not None
@@ -130,7 +132,8 @@ class TestE2EAgentGraph:
             mock_llm.chat = AsyncMock(side_effect=mock_chat)
             mock_get_llm.return_value = mock_llm
 
-            with patch("src.graph.postprocessing.write_chunk", new_callable=AsyncMock):
+            with patch("src.tasks.memory_tasks.write_vector_memory") as mock_write:
+                mock_write.delay = MagicMock()
                 events = []
                 async for event in run_agent_stream("推荐护肤品", user_id="test_user"):
                     events.append(event)

@@ -148,6 +148,19 @@ async def _run_normal_preprocessing(user_input: str, user_id: str, state: dict) 
         )
         intent, confidence, source = sem_intent, sem_confidence, "semantic"
 
+    # Redis window recovery: if empty (TTL expired), fall back to PostgreSQL
+    if not window:
+        logger.info("window_empty_fallback_pg", session_id=session_id)
+        from src.memory.conversation_store import get_recent_turns
+        pg_messages = await asyncio.to_thread(
+            get_recent_turns, user_id, session_id, 10
+        )
+        if pg_messages:
+            window = pg_messages
+            await session_mem.rebuild_window(pg_messages)
+            logger.info("window_recovered", session_id=session_id,
+                         message_count=len(pg_messages))
+
     # Context carry-forward: inherit missing fields from previous turn's entities
     prev_entities = state.get("entities", {})
     task_switched = _detect_task_switch(entities, prev_entities)
@@ -206,6 +219,33 @@ async def _run_normal_preprocessing(user_input: str, user_id: str, state: dict) 
                 memory_count=len(memories),
                 soft_req_count=len(entities.get("soft_requirements", [])))
 
+    # Extract memory signals by type for ranker
+    memory_signals = {
+        "positive_interest": [],
+        "negative_feedback": [],
+        "stable_preference": [],
+        "recent_task_memory": [],
+    }
+    if isinstance(memories, list):
+        for m in memories:
+            sig_type = m.get("memory_signal_type", "")
+            if sig_type in memory_signals:
+                memory_signals[sig_type].append(m)
+
+    # Inject stable_preference signals into soft_requirements (lower importance)
+    for m in memory_signals.get("stable_preference", []):
+        user_input_text = m.get("user_input", "")
+        if user_input_text and not any(
+            user_input_text[:20] in sr.get("raw_text", "")
+            for sr in entities.get("soft_requirements", [])
+        ):
+            entities.setdefault("soft_requirements", []).append({
+                "raw_text": user_input_text[:50],
+                "canonical": user_input_text[:20],
+                "type": "stable_preference",
+                "importance": 0.5,
+            })
+
     # Skip disambiguation for scenarios where null category/product_type is expected,
     # or for comparison queries (multiple brands are expected, disambiguation is irrelevant)
     user_goals = intent.get("user_goals", []) if isinstance(intent, dict) else []
@@ -251,6 +291,7 @@ async def _run_normal_preprocessing(user_input: str, user_id: str, state: dict) 
         "user_goals": user_goals,
         "entities": entities,
         "memory_chunks": memories if isinstance(memories, list) else [],
+        "memory_signals": memory_signals,
         "search_plan": search_plan,
         "session_window": window,
         "session_summary": summary,

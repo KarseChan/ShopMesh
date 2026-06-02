@@ -25,6 +25,7 @@ async def multi_query_search(
     entities: dict,
     per_type_top_k: int = 5,
     max_results: int = 10,
+    memory_signals: dict | None = None,
 ) -> dict:
     """Execute multiple search requests and merge results.
 
@@ -89,7 +90,7 @@ async def multi_query_search(
                 all_scores.append(item.get("score", 0.5))
 
     # Re-rank merged results
-    ranked = rank(all_products, search_scores=all_scores, entities=entities)
+    ranked = rank(all_products, search_scores=all_scores, entities=entities, memory_signals=memory_signals)
 
     # Cap results to save LLM tokens
     ranked = ranked[:max_results]
@@ -155,6 +156,10 @@ tool_registry.register(ToolDef(
                 "type": "integer",
                 "description": "最终返回总数（排序后截断），默认 5。推荐场景用 5，搜索场景可用 10。",
                 "default": 5,
+            },
+            "memory_signals": {
+                "type": "object",
+                "description": "记忆信号（positive_interest, negative_feedback, stable_preference, recent_task_memory），用于个性化排序",
             },
         },
         "required": ["search_requests", "entities"],

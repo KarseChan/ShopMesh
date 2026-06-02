@@ -86,6 +86,51 @@ def _has_strong_signal(text: str) -> bool:
     return any(re.search(p, text) for p in _STRONG_SIGNAL_PATTERNS)
 
 
+# === Signal type patterns for memory classification ===
+_POSITIVE_INTEREST_PATTERNS = [
+    r"想买", r"想要", r"关注", r"收藏", r"加入购物车",
+    r"喜欢\w+的", r"看看\w+的", r"不错", r"心动",
+]
+_NEGATIVE_FEEDBACK_PATTERNS = [
+    r"不喜欢", r"嫌贵", r"太贵了", r"不要", r"排除",
+    r"不想", r"淘汰", r"放弃", r"不买", r"不好",
+]
+_STABLE_PREFERENCE_PATTERNS = [
+    r"我一直", r"我习惯", r"我的肤质", r"敏感肌",
+    r"低刺激", r"我属于", r"我偏好", r"我平时",
+    r"我是\w+皮", r"我喜欢\w+风格",
+]
+
+
+def _classify_memory_signal(user_input: str, entities: dict, intent: str) -> str | None:
+    """Classify the memory signal type for vector storage.
+
+    Returns one of: "positive_interest", "negative_feedback",
+    "stable_preference", "recent_task_memory", or None.
+    """
+    has_brand = bool(entities.get("brand"))
+    has_product_type = bool(entities.get("product_type"))
+
+    # Negative feedback (highest priority — user拒绝/排除)
+    if any(re.search(p, user_input) for p in _NEGATIVE_FEEDBACK_PATTERNS):
+        return "negative_feedback"
+
+    # Stable preference (长期习惯/肤质等)
+    if any(re.search(p, user_input) for p in _STABLE_PREFERENCE_PATTERNS):
+        return "stable_preference"
+
+    # Positive interest (关注/喜欢 + 有具体商品实体)
+    if any(re.search(p, user_input) for p in _POSITIVE_INTEREST_PATTERNS):
+        if has_brand or has_product_type:
+            return "positive_interest"
+
+    # Fallback: has entities but no strong signal → recent task memory
+    if has_brand or has_product_type:
+        return "recent_task_memory"
+
+    return None
+
+
 async def _batch_classify_preferences(session_id: str, user_id: str, category: str) -> None:
     """Level 2: batch LLM preference classification (background task).
 
@@ -126,6 +171,7 @@ async def _batch_classify_preferences(session_id: str, user_id: str, category: s
                     entities={},
                     intent="preference",
                     category=category,
+                    memory_signal_type="stable_preference",
                 )
                 # L3: update user profile (brand/price/style)
                 pref_type = pref.get("preference_type", "")
@@ -211,6 +257,7 @@ async def node_postprocess(state: dict) -> dict:
     category = entities.get("category", "") or ""
     if _has_strong_signal(user_input):
         # Level 1: strong signal → write immediately via Celery
+        signal_type = _classify_memory_signal(user_input, entities, intent)
         write_vector_memory.delay(
             user_id=user_id,
             user_input=user_input,
@@ -218,6 +265,7 @@ async def node_postprocess(state: dict) -> dict:
             entities=entities,
             intent=intent,
             category=category,
+            memory_signal_type=signal_type,
         )
         # Also update L3 profile for brand/price strong signals
         if any(kw in user_input for kw in ["品牌", "喜欢", "不喜欢", "不要", "排除", "不想"]):

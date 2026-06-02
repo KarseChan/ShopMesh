@@ -334,6 +334,58 @@ def _score_personalization(product: dict, user_profile: dict) -> float:
     return min(1.0, score)
 
 
+def _score_memory_boost(product: dict, memory_signals: dict | None) -> float:
+    """Score boost/penalty from Qdrant memory signals.
+
+    Returns a delta in [-0.20, +0.20]:
+    - positive_interest: +0.10~0.15 if product brand/type matches
+    - negative_feedback: -0.10~0.15 if product brand/type matches
+    - stable_preference: 0.0 (handled via attribute_match)
+    - recent_task_memory: +0.05~0.08 if product brand/type matches
+    """
+    if not memory_signals:
+        return 0.0
+
+    product_brand = product.get("brand", "")
+    product_type = product.get("product_type", "")
+
+    pos_boost = 0.0
+    neg_penalty = 0.0
+    recent_boost = 0.0
+
+    # Negative feedback (highest priority — overrides positive)
+    for mem in memory_signals.get("negative_feedback", []):
+        mem_entities = mem.get("entities", {})
+        if product_brand and product_brand == mem_entities.get("brand"):
+            neg_penalty = min(neg_penalty, -0.15)
+        elif product_type and product_type == mem_entities.get("product_type"):
+            neg_penalty = min(neg_penalty, -0.10)
+
+    # Positive interest
+    for mem in memory_signals.get("positive_interest", []):
+        mem_entities = mem.get("entities", {})
+        if product_brand and product_brand == mem_entities.get("brand"):
+            pos_boost = max(pos_boost, 0.15)
+        elif product_type and product_type == mem_entities.get("product_type"):
+            pos_boost = max(pos_boost, 0.10)
+
+    # Recent task memory (mild boost)
+    for mem in memory_signals.get("recent_task_memory", []):
+        mem_entities = mem.get("entities", {})
+        if product_brand and product_brand == mem_entities.get("brand"):
+            recent_boost = max(recent_boost, 0.08)
+        elif product_type and product_type == mem_entities.get("product_type"):
+            recent_boost = max(recent_boost, 0.05)
+
+    # If both positive and negative, negative wins (防矛盾)
+    if neg_penalty < 0:
+        total = neg_penalty
+    else:
+        total = pos_boost + recent_boost
+
+    return max(-0.20, min(0.20, total))
+
+
 def _score_product_type_match(product: dict, product_type: str | None) -> float:
     """Product type match: penalty multiplier (not in weighted sum)."""
     if not product_type:
@@ -363,6 +415,7 @@ def rank(
     user_profile: dict | None = None,
     entities: dict | None = None,
     weights: dict | None = None,
+    memory_signals: dict | None = None,
 ) -> list[dict]:
     """Rank products using profile-based multi-objective weighted fusion.
 
@@ -433,6 +486,12 @@ def rank(
         if has_meta_scenario:
             scenario_boost = reasons["reputation"] * 0.06 + reasons["price"] * 0.04
             composite += scenario_boost
+
+        # Memory signal boost: positive/negative feedback from Qdrant memories
+        if memory_signals:
+            mem_boost = _score_memory_boost(product, memory_signals)
+            composite += mem_boost
+            reasons["memory_boost"] = round(mem_boost, 3)
 
         entry = {
             **product,

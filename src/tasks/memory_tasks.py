@@ -53,6 +53,7 @@ def write_vector_memory(
     intent: str | None = None,
     category: str | None = None,
     importance: float = 1.0,
+    memory_signal_type: str | None = None,
 ):
     """Write dialog chunk to vector memory with contradiction detection."""
     from src.memory.memory_retriever import write_chunk_with_contradiction_awareness
@@ -64,6 +65,7 @@ def write_vector_memory(
         intent=intent,
         category=category,
         importance=importance,
+        memory_signal_type=memory_signal_type,
     ))
 
 
