@@ -10,7 +10,6 @@ _SYSTEM_TEMPLATE = """你是一个智能导购 Agent。系统已经为你完成�
 
 用户意图：{intent}（置信度 {confidence}）
 提取的实体：{entities}
-用户历史记忆：{memory_summary}
 检索计划：{search_plan}
 
 你可以调用以下工具来完成后续决策：
@@ -110,6 +109,39 @@ def _format_memory(memory_chunks: list) -> str:
     return "\n".join(lines) if lines else "无历史记忆"
 
 
+def _format_memory_signals(memory_signals: dict) -> str:
+    """Format memory signals as compact structured summary.
+
+    Replaces raw memory_chunks text with consumed signal evidence.
+    """
+    if not memory_signals:
+        return ""
+
+    parts = []
+    pos = memory_signals.get("positive_interest", [])
+    if pos:
+        brands = [m.get("entities", {}).get("brand") or m.get("user_input", "")[:15] for m in pos[:3]]
+        brands = [b for b in brands if b]
+        if brands:
+            parts.append(f"正向关注: {', '.join(brands)}")
+
+    neg = memory_signals.get("negative_feedback", [])
+    if neg:
+        items = [m.get("entities", {}).get("brand") or m.get("user_input", "")[:15] for m in neg[:3]]
+        items = [i for i in items if i]
+        if items:
+            parts.append(f"负面反馈: {', '.join(items)}")
+
+    stable = memory_signals.get("stable_preference", [])
+    if stable:
+        prefs = [m.get("user_input", "")[:20] for m in stable[:3]]
+        prefs = [p for p in prefs if p]
+        if prefs:
+            parts.append(f"稳定偏好: {', '.join(prefs)}")
+
+    return "\n".join(f"- {p}" for p in parts) if parts else ""
+
+
 def _format_session_summary(summary: str) -> str:
     """Format L2b session summary for prompt display."""
     if not summary:
@@ -196,7 +228,7 @@ def build_system_prompt(state: dict) -> str:
     """Build the ReAct system prompt with preprocessed context.
 
     Args:
-        state: AgentState containing intent, entities, memory_chunks, search_plan,
+        state: AgentState containing intent, entities, memory_signals, search_plan,
                session_summary, user_profile
 
     Returns:
@@ -205,7 +237,7 @@ def build_system_prompt(state: dict) -> str:
     intent = state.get("intent", {})
     confidence = state.get("_intent_confidence", 0.8)
     entities = state.get("entities", {})
-    memory_chunks = state.get("memory_chunks", [])
+    memory_signals = state.get("memory_signals", {})
     search_plan = state.get("search_plan", {})
     session_summary = state.get("session_summary", "")
     user_profile = state.get("user_profile", {})
@@ -223,9 +255,9 @@ def build_system_prompt(state: dict) -> str:
     if summary_str:
         context_parts.append(f"【历史脉络】{summary_str}")
 
-    memory_str = _format_memory(memory_chunks)
-    if memory_str and memory_str != "无历史记忆":
-        context_parts.append(f"【历史事实】\n{memory_str}")
+    signals_str = _format_memory_signals(memory_signals)
+    if signals_str:
+        context_parts.append(f"【记忆信号】\n{signals_str}")
 
     context_block = "\n".join(context_parts) if context_parts else ""
 
@@ -233,7 +265,6 @@ def build_system_prompt(state: dict) -> str:
         intent=_format_intent(intent),
         confidence=f"{confidence:.2f}",
         entities=_format_entities(entities),
-        memory_summary=memory_str,
         search_plan=_format_search_plan(search_plan),
         tool_descriptions=_format_tool_descriptions(tools),
     )
@@ -248,15 +279,25 @@ def build_system_prompt(state: dict) -> str:
 def build_react_messages(state: dict) -> list[dict]:
     """Build the full message list for ReAct LLM call.
 
-    Returns: [system_prompt, ...session_window, ...dialog_history, ...tool_observations]
+    Returns: [system_prompt, ...session_window_degraded, ...dialog_history, ...tool_observations]
+
+    Session window degradation: keeps last 1 turn raw for conversational flow,
+    replaces earlier turns with compact evidence summary.
     """
     system_prompt = build_system_prompt(state)
     messages = [{"role": "system", "content": system_prompt}]
 
-    # Inject L2a session window (historical turns from Redis)
+    # Inject L2a session window with degradation
     session_window = state.get("session_window", [])
     if session_window:
-        messages.extend(session_window)
+        # Keep last 1 turn (2 messages: user + assistant) raw
+        if len(session_window) > 2:
+            evidence = _build_session_evidence(state)
+            if evidence:
+                messages.append({"role": "user", "content": evidence})
+            messages.extend(session_window[-2:])
+        else:
+            messages.extend(session_window)
 
     # Append current dialog history
     for msg in state.get("messages", []):
@@ -280,3 +321,46 @@ def build_react_messages(state: dict) -> list[dict]:
         messages.append({"role": "user", "content": f"Observation: {observation}"})
 
     return messages
+
+
+def _build_session_evidence(state: dict) -> str:
+    """Build compact evidence summary from consumed session window.
+
+    Extracts key facts from entities and memory_signals to replace
+    raw session window text with a one-line evidence note.
+    """
+    entities = state.get("entities", {})
+    memory_signals = state.get("memory_signals", {})
+
+    parts = []
+
+    # Extract key entities as evidence
+    brand = entities.get("brand")
+    product_type = entities.get("product_type")
+    category = entities.get("category")
+    scenario = entities.get("scenario")
+
+    if brand:
+        parts.append(f"关注{brand}")
+    if product_type:
+        parts.append(f"找{product_type}")
+    if scenario:
+        parts.append(f"场景:{scenario}")
+
+    # Extract memory signal evidence
+    neg = memory_signals.get("negative_feedback", [])
+    for m in neg[:1]:
+        neg_brand = m.get("entities", {}).get("brand")
+        if neg_brand:
+            parts.append(f"曾拒绝{neg_brand}")
+
+    stable = memory_signals.get("stable_preference", [])
+    for m in stable[:1]:
+        pref = m.get("user_input", "")[:15]
+        if pref:
+            parts.append(pref)
+
+    if not parts:
+        return ""
+
+    return f"[上下文已解析] {'，'.join(parts)}"
