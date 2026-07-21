@@ -2,14 +2,15 @@
 
 Architecture:
 1. Entity Extractor outputs hard_constraints + soft_requirements
-2. Ranker computes 6 dimension scores per product
+2. Ranker computes 7 dimension scores per product (conditional reranker)
 3. Profile selector picks a stable weight profile based on query characteristics
 4. Weighted fusion + product_type_match penalty → final rank
 
 Dimensions:
 - product_type_match: structured type field match (multiplicative penalty)
 - attribute_match: soft_requirements keyword/synonym match
-- relevance: vector similarity score (from Qdrant search)
+- semantic_rerank: cross-encoder reranker score (conditional, from bge-reranker-v2-m3)
+- relevance: vector similarity score (from Qdrant search, fallback when reranker off)
 - price: price competitiveness (lower = better)
 - reputation: product popularity
 - personalization: user preference match
@@ -52,7 +53,8 @@ RANK_PROFILES = {
     "default": {
         "product_type_match": 0.25,
         "attribute_match": 0.20,
-        "relevance": 0.20,
+        "semantic_rerank": 0.15,
+        "relevance": 0.05,
         "price": 0.15,
         "reputation": 0.10,
         "personalization": 0.10,
@@ -60,23 +62,26 @@ RANK_PROFILES = {
     "price_sensitive": {
         "product_type_match": 0.20,
         "attribute_match": 0.15,
+        "semantic_rerank": 0.10,
+        "relevance": 0.05,
         "price": 0.30,
-        "relevance": 0.15,
         "reputation": 0.15,
         "personalization": 0.05,
     },
     "quality_sensitive": {
         "product_type_match": 0.20,
         "attribute_match": 0.20,
+        "semantic_rerank": 0.10,
+        "relevance": 0.05,
         "reputation": 0.25,
-        "relevance": 0.15,
         "price": 0.10,
         "personalization": 0.10,
     },
     "scenario_preference": {
         "product_type_match": 0.20,
-        "attribute_match": 0.30,
-        "relevance": 0.15,
+        "attribute_match": 0.25,
+        "semantic_rerank": 0.15,
+        "relevance": 0.05,
         "price": 0.10,
         "reputation": 0.15,
         "personalization": 0.10,
@@ -407,15 +412,171 @@ def _score_product_type_match(product: dict, product_type: str | None) -> float:
     return 0.1
 
 
+def _build_rank_reason_text(reasons: dict, entities: dict) -> str:
+    """Generate one-line Chinese summary of why this product ranked well."""
+    parts = []
+
+    pt_match = reasons.get("product_type_match", 0)
+    if pt_match >= 0.9:
+        parts.append("品类精准匹配")
+    elif pt_match >= 0.7:
+        parts.append("品类相关")
+
+    attr_match = reasons.get("attribute_match", 0)
+    if attr_match > 0.3:
+        parts.append("符合需求描述")
+
+    price_score = reasons.get("price", 0)
+    if price_score > 0.7:
+        parts.append("价格实惠")
+
+    rep_score = reasons.get("reputation", 0)
+    if rep_score > 0.7:
+        parts.append("口碑好")
+
+    mem_boost = reasons.get("memory_boost", 0)
+    if mem_boost > 0.05:
+        parts.append("符合你的偏好")
+    elif mem_boost < -0.05:
+        parts.append("有历史负面反馈")
+
+    if not parts:
+        parts.append("语义相关")
+
+    return "，".join(parts[:3])
+
+
+# --- Reranker Integration ---
+
+_VAGUE_PRODUCT_TYPES = {"衣服", "穿搭", "搭配", "一套", "套装", "服装", "服饰"}
+
+
+def _should_rerank(entities: dict, products: list, search_scores: list) -> bool:
+    """Decide whether to invoke cross-encoder reranker.
+
+    Triggers for: vague queries, multi-requirement, close scores, multi-type candidates.
+    Skips for: precise queries where hard filters + attribute match are already strong.
+    """
+    from src.models.reranker import is_reranker_enabled
+    if not is_reranker_enabled():
+        return False
+
+    cfg = config.get("reranker", {}).get("trigger", {})
+
+    # Condition 1: vague product type
+    product_type = entities.get("product_type", "")
+    if product_type in _VAGUE_PRODUCT_TYPES:
+        return True
+
+    # Condition 2: multiple soft requirements
+    soft_reqs = entities.get("soft_requirements", [])
+    min_reqs = cfg.get("min_soft_requirements", 2)
+    actionable = [r for r in soft_reqs if r.get("type", "") not in ("meta_gift_context", "price_preference")]
+    if len(actionable) >= min_reqs:
+        return True
+
+    # Condition 3: candidate scores too close to distinguish
+    gap_threshold = cfg.get("score_gap_threshold", 0.1)
+    if len(search_scores) >= 5:
+        top5 = sorted(search_scores, reverse=True)[:5]
+        if top5[0] - top5[-1] < gap_threshold:
+            return True
+
+    # Condition 4: multi-type candidates (from multi_query_search)
+    product_types = {p.get("product_type") for p in products if p.get("product_type")}
+    if len(product_types) >= 3:
+        return True
+
+    return False
+
+
+def _build_grounded_query(entities: dict, original_query: str = "") -> str:
+    """Build a grounded query for reranker from preprocessed entities.
+
+    Uses structured entities instead of raw user input (which may contain
+    pronouns, ellipsis, or context dependencies).
+    """
+    parts = []
+
+    # Action word from intent
+    intent = entities.get("intent", {})
+    intent_type = intent.get("type", "") if isinstance(intent, dict) else ""
+    if intent_type == "review_summary":
+        parts.append("查看用户评论")
+    elif intent_type == "compare":
+        parts.append("对比商品")
+    else:
+        parts.append("查找商品")
+
+    # Category + product type
+    product_type = entities.get("product_type", "")
+    category = entities.get("category", "")
+    if product_type and product_type not in _VAGUE_PRODUCT_TYPES:
+        parts.append(product_type)
+    elif product_type:
+        parts.append(f"适合{entities.get('scenario', '')}的{product_type}" if entities.get("scenario") else product_type)
+    elif category:
+        parts.append(category)
+
+    # Scenario
+    scenario = entities.get("scenario", "")
+    if scenario and product_type not in _VAGUE_PRODUCT_TYPES:
+        parts.append(f"适合{scenario}")
+
+    # Hard constraints
+    brand = entities.get("brand", "")
+    if brand:
+        parts.append(f"品牌{brand}")
+
+    gender = entities.get("gender", "")
+    if gender:
+        parts.append(f"{gender}款")
+
+    price_max = entities.get("price_max")
+    price_min = entities.get("price_min")
+    if price_max and price_min:
+        parts.append(f"预算{price_min}-{price_max}元")
+    elif price_max:
+        parts.append(f"预算{price_max}元以内")
+
+    # Soft requirements
+    soft_reqs = entities.get("soft_requirements", [])
+    for req in soft_reqs:
+        canonical = req.get("canonical") or req.get("raw_text") or req.get("text", "")
+        if canonical:
+            parts.append(canonical)
+
+    # Preference
+    preference = entities.get("preference", "")
+    if preference:
+        parts.append(preference)
+
+    grounded = "，".join(parts)
+
+    # Fallback: too short, supplement from original query
+    if len(grounded) < 10 and original_query:
+        grounded = original_query
+
+    return grounded
+
+
+def _score_semantic_rerank(product: dict, all_products: list[dict]) -> float:
+    """Cross-encoder rerank score, normalized across candidates."""
+    raw = product.get("_rerank_score", 0.5)
+    scores = [p.get("_rerank_score", 0.5) for p in all_products]
+    return _normalize(raw, min(scores), max(scores))
+
+
 # --- Main Rank Function ---
 
-def rank(
+async def rank(
     products: list[dict],
     search_scores: list[float] | None = None,
     user_profile: dict | None = None,
     entities: dict | None = None,
     weights: dict | None = None,
     memory_signals: dict | None = None,
+    original_query: str = "",
 ) -> list[dict]:
     """Rank products using profile-based multi-objective weighted fusion.
 
@@ -425,6 +586,7 @@ def rank(
         user_profile: User preference profile
         entities: Current query entities (contains soft_requirements)
         weights: Custom weights override (bypasses profile selection)
+        original_query: Original user query for grounded_query construction
 
     Returns:
         List of products sorted by composite score, each with
@@ -454,6 +616,25 @@ def rank(
         for req in soft_requirements
     )
 
+    # Conditional cross-encoder reranker
+    use_reranker = _should_rerank(ents, products, scores)
+    if use_reranker:
+        grounded_query = _build_grounded_query(ents, original_query)
+        from src.models.reranker import get_reranker
+        reranker = get_reranker()
+        product_texts = [_build_product_text(p) for p in products]
+        rerank_results = await reranker.rerank(grounded_query, product_texts)
+        rerank_map = {idx: score for idx, score in rerank_results}
+        for i, product in enumerate(products):
+            product["_rerank_score"] = rerank_map.get(i, 0.5)
+        logger.info("reranker_triggered",
+                    grounded_query=grounded_query[:80],
+                    candidate_count=len(products),
+                    top_score=rerank_results[0][1] if rerank_results else 0)
+    else:
+        for p in products:
+            p["_rerank_score"] = 0.5
+
     ranked = []
     for i, product in enumerate(products):
         search_score = scores[i] if i < len(scores) else 0.5
@@ -461,10 +642,11 @@ def rank(
         # Attribute match (returns score + per-requirement breakdown)
         attr_score, attr_scores = _score_attribute_match(product, soft_requirements)
 
-        # 6 dimension scores
+        # 7 dimension scores
         reasons = {
             "product_type_match": round(_score_product_type_match(product, product_type), 3),
             "attribute_match": round(attr_score, 3),
+            "semantic_rerank": round(_score_semantic_rerank(product, products), 3),
             "relevance": round(_score_relevance(product, search_score), 3),
             "price": round(_score_price(product, products), 3),
             "reputation": round(_score_reputation(product), 3),
@@ -497,6 +679,7 @@ def rank(
             **product,
             "rank_score": round(composite, 4),
             "rank_reasons": reasons,
+            "rank_reason_text": _build_rank_reason_text(reasons, entities),
         }
         if attr_scores:
             entry["attribute_scores"] = attr_scores
@@ -540,6 +723,7 @@ def explain_rank(product: dict) -> str:
             best_dim = max(scorable, key=scorable.get)
             dim_names = {
                 "attribute_match": "属性匹配度高",
+                "semantic_rerank": "语义精排相关性高",
                 "relevance": "与你的需求高度匹配",
                 "price": "价格有优势",
                 "reputation": "口碑好、销量高",

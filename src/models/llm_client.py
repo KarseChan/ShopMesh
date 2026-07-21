@@ -3,6 +3,7 @@
 import asyncio
 import json
 import re
+import time
 from collections.abc import AsyncGenerator
 from functools import lru_cache
 
@@ -19,14 +20,64 @@ logger = get_logger("llm_client")
 _MAX_RETRIES = 3
 _BASE_DELAY = 1.0  # seconds
 
+# Circuit breaker config
+_CIRCUIT_FAIL_THRESHOLD = 5    # consecutive failures to open circuit
+_CIRCUIT_RECOVERY_TIME = 30.0  # seconds before half-open
+
+
+class CircuitBreaker:
+    """Simple circuit breaker: opens after N consecutive failures, recovers after cooldown."""
+
+    def __init__(self, fail_threshold: int = _CIRCUIT_FAIL_THRESHOLD,
+                 recovery_time: float = _CIRCUIT_RECOVERY_TIME):
+        self._fail_threshold = fail_threshold
+        self._recovery_time = recovery_time
+        self._consecutive_failures = 0
+        self._opened_at: float | None = None
+
+    @property
+    def state(self) -> str:
+        if self._opened_at is None:
+            return "closed"
+        if time.time() - self._opened_at >= self._recovery_time:
+            return "half_open"
+        return "open"
+
+    def allow_request(self) -> bool:
+        s = self.state
+        if s == "closed":
+            return True
+        if s == "half_open":
+            return True  # allow one probe
+        return False  # open — fast-fail
+
+    def record_success(self) -> None:
+        self._consecutive_failures = 0
+        self._opened_at = None
+
+    def record_failure(self) -> None:
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= self._fail_threshold:
+            self._opened_at = time.time()
+            logger.warning("circuit_opened", failures=self._consecutive_failures,
+                           recovery_in=self._recovery_time)
+
+    def time_until_recovery(self) -> float:
+        if self._opened_at is None:
+            return 0.0
+        elapsed = time.time() - self._opened_at
+        return max(0.0, self._recovery_time - elapsed)
+
 
 class LLMClient:
     """Thin wrapper around OpenAI-compatible chat completions API."""
 
     # Separate connect vs read timeouts: fail fast on unreachable servers,
     # but allow LLM time to generate responses.
-    _CONNECT_TIMEOUT = 15.0   # seconds — generous for LLM servers under load
+    _CONNECT_TIMEOUT = 5.0    # seconds — fast-fail + retry beats slow-fail
     _READ_TIMEOUT = 120.0     # seconds — LLM can take a while to respond
+
+    _circuit = CircuitBreaker()  # shared across all instances
 
     def __init__(self, model: str, base_url: str, api_key: str = "",
                  temperature: float = 0.1, max_tokens: int = 2048):
@@ -40,7 +91,16 @@ class LLMClient:
         """Send chat completion request and return the response message.
 
         Retries up to _MAX_RETRIES times with exponential backoff on connection errors.
+        Circuit breaker fast-fails after consecutive failures.
         """
+        if not self._circuit.allow_request():
+            wait = self._circuit.time_until_recovery()
+            logger.warning("circuit_breaker_open", wait_seconds=round(wait, 1))
+            raise httpx.ConnectError(
+                f"LLM service circuit breaker open, retry in {wait:.0f}s",
+                request=None,
+            )
+
         url = f"{self.base_url}/chat/completions"
         headers = {
             "Content-Type": "application/json",
@@ -81,6 +141,7 @@ class LLMClient:
                         tenant_id=get_tenant_id() or "",
                     )
 
+                self._circuit.record_success()
                 return data["choices"][0]["message"]
             except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout) as e:
                 last_error = e
@@ -101,6 +162,7 @@ class LLMClient:
                 else:
                     raise
 
+        self._circuit.record_failure()
         raise last_error
 
     async def chat_stream(self, messages: list[dict], tools: list[dict] | None = None) -> AsyncGenerator[str, None]:
@@ -108,7 +170,16 @@ class LLMClient:
 
         Uses OpenAI-compatible SSE format (stream: true).
         Retries on connection errors, same as chat().
+        Circuit breaker fast-fails after consecutive failures.
         """
+        if not self._circuit.allow_request():
+            wait = self._circuit.time_until_recovery()
+            logger.warning("circuit_breaker_open", wait_seconds=round(wait, 1))
+            raise httpx.ConnectError(
+                f"LLM service circuit breaker open, retry in {wait:.0f}s",
+                request=None,
+            )
+
         url = f"{self.base_url}/chat/completions"
         headers = {
             "Content-Type": "application/json",
@@ -162,6 +233,7 @@ class LLMClient:
                                     yield content
                             except (json.JSONDecodeError, IndexError, KeyError):
                                 continue
+                self._circuit.record_success()
                 return  # success, exit retry loop
             except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout) as e:
                 last_error = e
@@ -181,6 +253,7 @@ class LLMClient:
                 else:
                     raise
 
+        self._circuit.record_failure()
         raise last_error
 
     async def chat_json(self, messages: list[dict]) -> dict:

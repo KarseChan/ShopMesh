@@ -141,6 +141,10 @@ async def run_agent_stream(
 
     config = {"configurable": {"thread_id": tid}}
 
+    # Initialize ResultStore for this request (stores full product data for output guard)
+    from src.retrieval.result_store import ResultStore, set_result_store
+    set_result_store(ResultStore())
+
     try:
         yield {"event": "status", "data": {"phase": "thinking", "message": "正在分析您的需求..."}}
 
@@ -240,8 +244,6 @@ async def run_agent_stream(
                 }}
 
             if final_response:
-                async for token in stream_explanation(state_values):
-                    yield {"event": "explanation_delta", "data": {"delta": token}}
                 yield {"event": "explanation", "data": {"text": final_response}}
 
         yield {"event": "done", "data": {"request_id": request_id}}

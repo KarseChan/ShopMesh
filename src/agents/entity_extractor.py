@@ -25,6 +25,95 @@ from src.observability.logger import get_logger
 
 logger = get_logger("entity_extractor")
 
+# Combined entity + intent prompt for when semantic router misses
+_COMBINED_SYSTEM_PROMPT = (
+    "你是实体提取器和意图分类器。从用户输入中同时抽取实体和意图，返回 JSON：\n"
+    "{\n"
+    '  "entities": {\n'
+    '    "category": "大品类或null",\n'
+    '    "product_type": "具体商品词或null",\n'
+    '    "gender": "男/女或null",\n'
+    '    "price_min": 数字或null,\n'
+    '    "price_max": 数字或null,\n'
+    '    "brand": "品牌或null",\n'
+    '    "scenario": "场景或null",\n'
+    '    "quantity": 数字或null,\n'
+    '    "preference": "偏好关键词或null",\n'
+    '    "skin_type": "肤质或null（仅护肤品类）",\n'
+    '    "concerns": "护肤需求或null（仅护肤品类）",\n'
+    '    "hard_constraints": {},\n'
+    '    "soft_requirements": [],\n'
+    '    "ambiguous": true/false,\n'
+    '    "ambiguous_fields": ["不确定的字段"]\n'
+    "  },\n"
+    '  "intent": {\n'
+    '    "user_goals": ["recommend_product"],\n'
+    '    "task_type": "product_search",\n'
+    '    "execution_hint": "direct_search",\n'
+    '    "confidence": 0.9\n'
+    "  }\n"
+    "}\n\n"
+    "实体提取规则：\n"
+    "品类只限：护肤、奶茶、数码、服饰、鞋靴、箱包、食品、家居、母婴、运动\n"
+    "product_type：核心商品词，去掉修饰词。如'商务双肩包'→'双肩包'。\n"
+    "gender：明确提到的性别。未提及则为null。\n"
+    "hard_constraints：必须满足的条件（通常含 product_type）。gender 不要放入。\n"
+    "soft_requirements：非硬性偏好列表。每个元素：\n"
+    '  {"raw_text": "用户原话", "canonical": "核心词", "type": "类型", "importance": 0.5-1.0}\n\n'
+    "意图分类规则：\n"
+    "user_goals：recommend_product/find_product/compare_products/view_detail/place_order（可1-2个）\n"
+    "task_type：shopping_advice/product_search/outfit_planning/price_comparison/detail_inquiry/order_placement\n"
+    "execution_hint：contextual_search/direct_search/multi_query/compare/get_detail/clarify_first\n"
+    "confidence：0.0~1.0\n\n"
+    "只输出 JSON，不要其他文字。"
+)
+
+
+def _parse_entities(result: dict) -> dict:
+    """Normalize entity fields from LLM result."""
+    return {
+        "category": result.get("category"),
+        "product_type": result.get("product_type"),
+        "gender": result.get("gender"),
+        "price_min": result.get("price_min"),
+        "price_max": result.get("price_max"),
+        "brand": result.get("brand"),
+        "scenario": result.get("scenario"),
+        "quantity": result.get("quantity"),
+        "preference": result.get("preference"),
+        "skin_type": result.get("skin_type"),
+        "concerns": result.get("concerns"),
+        "hard_constraints": result.get("hard_constraints", {}),
+        "soft_requirements": result.get("soft_requirements", []),
+        "ambiguous": result.get("ambiguous", False),
+        "ambiguous_fields": result.get("ambiguous_fields", []),
+    }
+
+
+def _parse_intent(result: dict) -> dict:
+    """Normalize intent fields from LLM result."""
+    return {
+        "user_goals": result.get("user_goals", ["find_product"]),
+        "task_type": result.get("task_type", "product_search"),
+        "execution_hint": result.get("execution_hint", "direct_search"),
+    }
+
+
+_FALLBACK_ENTITIES = {
+    "category": None, "product_type": None, "gender": None,
+    "price_min": None, "price_max": None, "brand": None,
+    "scenario": None, "quantity": None, "preference": None,
+    "skin_type": None, "concerns": None,
+    "hard_constraints": {}, "soft_requirements": [],
+    "ambiguous": True, "ambiguous_fields": [],
+}
+
+_FALLBACK_INTENT = {
+    "user_goals": ["find_product"],
+    "task_type": "product_search",
+    "execution_hint": "direct_search",
+}
+
 SYSTEM_PROMPT = (
     "你是实体提取器。从用户输入中抽取以下字段，返回 JSON：\n"
     "{\n"
@@ -72,58 +161,59 @@ SYSTEM_PROMPT = (
 )
 
 
-async def extract_entities(query: str) -> dict:
+async def extract_entities(query: str, context_hint: str | None = None) -> dict:
     """Extract structured entities from user query.
+
+    Args:
+        query: User's raw input text.
+        context_hint: Optional context hint from fast category detection.
+            Injected as a separate message before the query to inform the LLM
+            about previous turn state and category switch signals.
 
     Returns dict with category, price_min, price_max, brand, scenario,
     quantity, ambiguous, ambiguous_fields.
     """
     llm = get_llm()
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": query},
-    ]
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    if context_hint:
+        messages.append({"role": "user", "content": f"[上下文信息]\n{context_hint}"})
+    messages.append({"role": "user", "content": query})
 
     try:
         result = await llm.chat_json(messages)
-        # Normalize: ensure all keys exist
-        entities = {
-            "category": result.get("category"),
-            "product_type": result.get("product_type"),
-            "gender": result.get("gender"),
-            "price_min": result.get("price_min"),
-            "price_max": result.get("price_max"),
-            "brand": result.get("brand"),
-            "scenario": result.get("scenario"),
-            "quantity": result.get("quantity"),
-            "preference": result.get("preference"),
-            "skin_type": result.get("skin_type"),
-            "concerns": result.get("concerns"),
-            "hard_constraints": result.get("hard_constraints", {}),
-            "soft_requirements": result.get("soft_requirements", []),
-            "ambiguous": result.get("ambiguous", False),
-            "ambiguous_fields": result.get("ambiguous_fields", []),
-        }
+        entities = _parse_entities(result)
         logger.info("entities_extracted", entities=entities)
         return entities
     except Exception as e:
         logger.error("entity_extraction_failed", error_type=type(e).__name__, error_message=str(e))
-        # Fallback: return raw query as keyword, mark ambiguous
-        return {
-            "category": None,
-            "product_type": None,
-            "gender": None,
-            "price_min": None,
-            "price_max": None,
-            "brand": None,
-            "scenario": None,
-            "quantity": None,
-            "preference": None,
-            "skin_type": None,
-            "concerns": None,
-            "hard_constraints": {},
-            "soft_requirements": [],
-            "ambiguous": True,
-            "ambiguous_fields": ["query"],
-            "_raw_query": query,
-        }
+        fallback = {**_FALLBACK_ENTITIES, "_raw_query": query}
+        return fallback
+
+
+async def extract_entities_and_intent(query: str, context_hint: str | None = None) -> tuple[dict, dict, float, str]:
+    """Combined entity extraction + intent classification in a single LLM call.
+
+    Args:
+        query: User's raw input text.
+        context_hint: Optional context hint from fast category detection.
+
+    Returns (entities, intent_dict, confidence, source).
+    source is "combined_llm" for the combined call.
+    """
+    llm = get_llm()
+    messages = [{"role": "system", "content": _COMBINED_SYSTEM_PROMPT}]
+    if context_hint:
+        messages.append({"role": "user", "content": f"[上下文信息]\n{context_hint}"})
+    messages.append({"role": "user", "content": query})
+
+    try:
+        result = await llm.chat_json(messages)
+        entities = _parse_entities(result.get("entities") or result)
+        intent = _parse_intent(result.get("intent") or result)
+        confidence = (result.get("intent") or result).get("confidence", 0.85)
+        logger.info("entities_and_intent_extracted",
+                     entities=entities, intent=intent, confidence=confidence)
+        return entities, intent, confidence, "combined_llm"
+    except Exception as e:
+        logger.error("combined_extraction_failed", error_type=type(e).__name__, error_message=str(e))
+        return _FALLBACK_ENTITIES.copy(), _FALLBACK_INTENT.copy(), 0.0, "default"

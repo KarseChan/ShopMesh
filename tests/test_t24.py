@@ -89,10 +89,11 @@ def test_select_rank_profile_scenario_preference():
 
 # === Integration Tests ===
 
-def test_rank_basic():
+@pytest.mark.asyncio
+async def test_rank_basic():
     """Rank products and get sorted results."""
     products = _make_products()
-    ranked = rank(products, search_scores=[0.9, 0.7, 0.8])
+    ranked = await rank(products, search_scores=[0.9, 0.7, 0.8])
     assert len(ranked) == 3
     # Should be sorted by rank_score descending
     assert ranked[0]["rank_score"] >= ranked[1]["rank_score"]
@@ -101,55 +102,61 @@ def test_rank_basic():
     for p in ranked:
         assert "rank_score" in p
         assert "rank_reasons" in p
-        assert len(p["rank_reasons"]) == 6
+        assert len(p["rank_reasons"]) == 7
 
 
-def test_rank_empty():
-    assert rank([]) == []
+@pytest.mark.asyncio
+async def test_rank_empty():
+    assert await rank([]) == []
 
 
-def test_rank_with_profile():
+@pytest.mark.asyncio
+async def test_rank_with_profile():
     """User profile affects ranking."""
     products = _make_products()
     profile = {"preferred_brands": ["蜜雪冰城"], "price_sensitivity": 0.9}
-    ranked = rank(products, search_scores=[0.8, 0.8, 0.8], user_profile=profile)
+    ranked = await rank(products, search_scores=[0.8, 0.8, 0.8], user_profile=profile)
     # 蜜雪冰城 should rank higher due to brand match + price sensitivity
     assert ranked[0]["brand"] == "蜜雪冰城"
 
 
-def test_rank_with_entities():
+@pytest.mark.asyncio
+async def test_rank_with_entities():
     """Entities affect weight adjustment."""
     products = _make_products()
     entities = {"scenario": "送礼"}
-    ranked = rank(products, search_scores=[0.8, 0.8, 0.8], entities=entities)
+    ranked = await rank(products, search_scores=[0.8, 0.8, 0.8], entities=entities)
     # With gift scenario, reputation weight increases
     assert len(ranked) == 3
 
 
-def test_rank_preserves_product_fields():
+@pytest.mark.asyncio
+async def test_rank_preserves_product_fields():
     """Ranked products retain original fields."""
     products = _make_products()
-    ranked = rank(products)
+    ranked = await rank(products)
     for p in ranked:
         assert "name" in p
         assert "price" in p
         assert "platform_id" in p
 
 
-def test_rank_custom_weights():
+@pytest.mark.asyncio
+async def test_rank_custom_weights():
     """Custom weights override defaults."""
     products = _make_products()
-    custom = {"product_type_match": 0, "attribute_match": 0, "relevance": 1.0,
-              "price": 0, "reputation": 0, "personalization": 0}
-    ranked = rank(products, search_scores=[0.9, 0.5, 0.7], weights=custom)
+    custom = {"product_type_match": 0, "attribute_match": 0, "semantic_rerank": 0,
+              "relevance": 1.0, "price": 0, "reputation": 0, "personalization": 0}
+    ranked = await rank(products, search_scores=[0.9, 0.5, 0.7], weights=custom)
     # With pure relevance weighting, order should match search scores
     assert ranked[0]["name"] == "古茗奶茶"  # 0.9
 
 
-def test_explain_rank():
+@pytest.mark.asyncio
+async def test_explain_rank():
     """explain_rank returns a human-readable reason."""
     products = _make_products()
-    ranked = rank(products, search_scores=[0.9, 0.7, 0.8])
+    ranked = await rank(products, search_scores=[0.9, 0.7, 0.8])
     explanation = explain_rank(ranked[0])
     assert isinstance(explanation, str)
     assert len(explanation) > 0

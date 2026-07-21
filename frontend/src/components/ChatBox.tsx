@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { useChatStream, ChatMessage, Product, Recommendation, ClarificationQuestion, ToolCall } from "@/hooks/useChatStream";
+import { useAuth } from "@/contexts/AuthContext";
 import ProductCard from "./ProductCard";
 import ComparisonTable, { type ComparisonData } from "./ComparisonTable";
 import OrderConfirm from "./OrderConfirm";
@@ -13,7 +14,11 @@ function StreamingCursor() {
 }
 
 export default function ChatBox() {
-  const { messages, isLoading, sendMessage, startOrder, resumeOrder, reportBehavior, pendingOrder } = useChatStream();
+  const { accessToken, user } = useAuth();
+  const { messages, isLoading, sendMessage, startOrder, resumeOrder, reportBehavior, pendingOrder } = useChatStream({
+    accessToken: accessToken || undefined,
+    userId: user?.userId,
+  });
   const [input, setInput] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
 

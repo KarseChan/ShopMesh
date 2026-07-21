@@ -336,7 +336,20 @@ async def node_orchestrator(state: dict) -> dict:
     deterministic_tasks = resolve_intent_tasks(user_goals)
     if deterministic_tasks is not None:
         # Build DAG from deterministic mapping
-        dag = _build_deterministic_dag(deterministic_tasks, state)
+        dag = await _build_deterministic_dag(deterministic_tasks, state)
+
+        # Short-circuit: clarification generated directly, skip DAG executor
+        if isinstance(dag, tuple) and dag[0] == "CLARIFICATION_SHORTCIRCUIT":
+            logger.info("orchestrator_deterministic",
+                         user_goals=user_goals,
+                         task_count=0,
+                         short_circuit="clarification")
+            return {
+                "task_dag": [],
+                "final_response": dag[1],
+                "_skip_dag_executor": True,
+            }
+
         logger.info("orchestrator_deterministic",
                      user_goals=user_goals,
                      task_count=len(dag))
@@ -382,6 +395,43 @@ async def node_orchestrator(state: dict) -> dict:
         return await _persist_and_return(_fallback_dag(user_goals, state), state)
 
 
+async def _generate_clarification_text(entities: dict, missing_fields: list[str]) -> str:
+    """Generate clarification question text from templates (deterministic, no LLM)."""
+    category = entities.get("category", "")
+    product_type = entities.get("product_type", "")
+
+    # Build the clarification spec using ask_clarification logic
+    from src.tools.agent_tools import ask_clarification as _ask_clarification
+    # Ensure missing_critical_fields is set for ask_clarification
+    entities_with_missing = {**entities, "missing_critical_fields": missing_fields}
+    spec = await _ask_clarification(entities_with_missing, asked_fields=[])
+
+    if not spec.get("should_ask"):
+        return ""
+
+    question_type = spec.get("question_type", "")
+    qspec = spec.get("question_spec", {})
+    suggestions = qspec.get("suggestions", {})
+
+    # Template mapping for common cases
+    if question_type == "clothing_gender":
+        return f"您是想买男士还是女士的{product_type}呢？"
+    if question_type == "clothing_gender_and_type":
+        opts = suggestions.get("product_type", ["衬衫", "西装外套"])
+        opts_str = "、".join(opts[:3]) if isinstance(opts, list) else str(opts)
+        return f"您想买什么类型的{category}呢？比如{opts_str}，另外是男士还是女士的？"
+    if question_type == "skincare_skin_type":
+        opts = suggestions.get("skin_type", ["干性", "油性", "混合性", "中性", "敏感肌"])
+        opts_str = "、".join(opts) if isinstance(opts, list) else str(opts)
+        return f"请问您的肤质是？（{opts_str}）"
+    if question_type == "budget":
+        return "请问您的预算大概是多少？"
+
+    # Fallback: use spec context
+    context = qspec.get("context", "")
+    return f"为了更好地为您推荐，想确认一下——{context}，能补充一下吗？"
+
+
 async def _persist_and_return(dag: list[dict], state: dict) -> dict:
     """Persist DAG to Redis and return with dag_id."""
     dag_id = f"dag_{int(time.time())}_{random.randint(0, 9999):04d}"
@@ -402,7 +452,7 @@ async def _persist_and_return(dag: list[dict], state: dict) -> dict:
     return result
 
 
-def _build_deterministic_dag(task_ids: list[str], state: dict) -> list[dict]:
+async def _build_deterministic_dag(task_ids: list[str], state: dict) -> list[dict]:
     """Build a DAG from deterministic task IDs with known dependency patterns.
 
     Hard-coded rule: if missing_critical_fields exist, force clarification
@@ -414,6 +464,13 @@ def _build_deterministic_dag(task_ids: list[str], state: dict) -> list[dict]:
         logger.info("deterministic_missing_fields",
                      fields=missing_fields,
                      original_tasks=task_ids)
+        # Short-circuit: generate clarification text directly, skip DAG executor
+        entities = state.get("entities", {})
+        clarification_text = await _generate_clarification_text(entities, missing_fields)
+        if clarification_text:
+            logger.info("clarification_short_circuit", text=clarification_text[:80])
+            return "CLARIFICATION_SHORTCIRCUIT", clarification_text
+        # Fallback to agent loop if template didn't cover this case
         return [{
             "task_id": "recommend",
             "depends_on": [],

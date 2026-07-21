@@ -190,13 +190,16 @@ def _extract_recent_messages(messages: list[dict], max_count: int = 3) -> list[d
 
     # Iterate in reverse to get most recent user messages
     for msg in reversed(messages):
-        role = msg.get("role", "")
-        if role == "user":
+        # Handle both dict and LangChain message objects
+        if isinstance(msg, dict):
+            role = msg.get("role", "")
+        else:
+            role = getattr(msg, "type", "")  # HumanMessage.type == "human"
+        if role in ("user", "human"):
             user_count += 1
             if user_count <= max_count:
                 result.insert(0, msg)
-        elif role == "system":
-            # Always keep system prompt
+        elif role in ("system",):
             result.insert(0, msg)
             break
 

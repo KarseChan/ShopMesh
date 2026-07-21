@@ -89,8 +89,11 @@ async def multi_query_search(
                 all_products.append(product)
                 all_scores.append(item.get("score", 0.5))
 
-    # Re-rank merged results
-    ranked = rank(all_products, search_scores=all_scores, entities=entities, memory_signals=memory_signals)
+    # Re-rank merged results (with optional cross-encoder reranker)
+    # Use the last search request as original_query (search planner appends user's raw query last)
+    original_query = search_requests[-1].get("query", "") if search_requests else ""
+    ranked = await rank(all_products, search_scores=all_scores, entities=entities,
+                        memory_signals=memory_signals, original_query=original_query)
 
     # Cap results to save LLM tokens
     ranked = ranked[:max_results]
@@ -112,8 +115,13 @@ async def multi_query_search(
                 types=list(by_type.keys()),
                 latency_ms=round(latency_ms, 1))
 
+    # Slim results for Agent prompt + full results for result store
+    from src.tools.product_search import _slim_product
+    slim_results = [_slim_product(p) for p in ranked]
+
     return {
-        "results": ranked,
+        "results": slim_results,
+        "_full_products": ranked,
         "total": len(ranked),
         "by_type": {k: [p.get("product_id", "") for p in v] for k, v in by_type.items()},
         "queries_executed": len(requests),

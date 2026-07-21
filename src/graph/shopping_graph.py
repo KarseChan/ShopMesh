@@ -250,7 +250,7 @@ async def node_rank(state: ShoppingState) -> dict:
             p["suggest_message"] = calc.get("suggest_message")
             p["is_abnormal"] = calc.get("is_abnormal", False)
 
-    ranked = rank(products, search_scores=scores, entities=entities)
+    ranked = await rank(products, search_scores=scores, entities=entities)
 
     # Post-filter: scenario suitability
     before_scenario = len(ranked)

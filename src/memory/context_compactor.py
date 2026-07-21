@@ -134,7 +134,13 @@ class ContextCompactor:
         # Find the last user message with tool_results
         last_user_msg = None
         for msg in reversed(messages):
-            if msg.get("role") == "user" and isinstance(msg.get("content"), list):
+            if isinstance(msg, dict):
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+            else:
+                role = getattr(msg, "type", "")
+                content = getattr(msg, "content", "")
+            if role in ("user", "human") and isinstance(content, list):
                 last_user_msg = msg
                 break
 
@@ -174,7 +180,9 @@ class ContextCompactor:
             tool_use_id = block.get("tool_use_id", "unknown")
             key = f"tool_result:{self._session_id}:{tool_use_id}"
             try:
-                await self._redis.set(key, content_str, ex=3600 * 24)  # 24h TTL
+                from src.config import config as _cfg
+                _tool_ttl = _cfg.get("session", {}).get("tool_result_ttl", 7200)
+                await self._redis.set(key, content_str, ex=_tool_ttl)
                 # Replace with preview
                 preview = content_str[:preview_chars]
                 block["content"] = f"{preview}\n[完整结果已持久化，ID: {tool_use_id}]"

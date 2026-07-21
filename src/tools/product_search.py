@@ -46,8 +46,9 @@ async def product_search(
         if "product_id" not in products[i]:
             products[i]["product_id"] = r.get("id", "")
 
-    # Step 3: Multi-objective ranking
-    ranked = rank(products, search_scores=search_scores, entities=entities, memory_signals=memory_signals)
+    # Step 3: Multi-objective ranking (with optional cross-encoder reranker)
+    ranked = await rank(products, search_scores=search_scores, entities=entities,
+                        memory_signals=memory_signals, original_query=semantic_query)
 
     # Step 4: Cap results to save LLM tokens
     ranked = ranked[:max_results]
@@ -63,8 +64,12 @@ async def product_search(
                 filter_applied=search_result["filter_applied"],
                 latency_ms=search_result["latency_ms"])
 
+    # Step 6: Build slim results for Agent prompt + full results for result store
+    slim_results = [_slim_product(p) for p in ranked]
+
     return {
-        "results": ranked,
+        "results": slim_results,
+        "_full_products": ranked,
         "total": len(ranked),
         "exact": len(exact_ids),
         "supplemental": len(supplemental_ids),
@@ -73,6 +78,20 @@ async def product_search(
         "display_product_ids": exact_ids,
         "filter_applied": search_result["filter_applied"],
         "latency_ms": search_result["latency_ms"],
+    }
+
+
+def _slim_product(p: dict) -> dict:
+    """Extract only fields the LLM needs for recommendation decisions."""
+    return {
+        "product_id": p.get("product_id", ""),
+        "name": p.get("name", ""),
+        "price": p.get("price"),
+        "brand": p.get("brand", ""),
+        "features": p.get("features", [])[:3],
+        "rating": p.get("rating"),
+        "rank_score": p.get("rank_score"),
+        "rank_reason_text": p.get("rank_reason_text", ""),
     }
 
 

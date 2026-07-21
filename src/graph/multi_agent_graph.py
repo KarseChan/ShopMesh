@@ -75,10 +75,20 @@ def build_multi_agent_graph(use_orchestrator: bool = True):
         graph.add_node("orchestrator", node_orchestrator)
         graph.add_node("dag_executor", node_dag_executor)
 
-        # Entry: preprocess → orchestrator → dag_executor → postprocess → END
+        # Entry: preprocess → orchestrator → (dag_executor | postprocess) → END
         graph.set_entry_point("preprocess")
         graph.add_edge("preprocess", "orchestrator")
-        graph.add_edge("orchestrator", "dag_executor")
+
+        # Conditional: skip dag_executor when clarification is short-circuited
+        def after_orchestrator(state):
+            if state.get("_skip_dag_executor"):
+                return "postprocess"
+            return "dag_executor"
+
+        graph.add_conditional_edges("orchestrator", after_orchestrator, {
+            "dag_executor": "dag_executor",
+            "postprocess": "postprocess",
+        })
         graph.add_edge("dag_executor", "postprocess")
         graph.add_edge("postprocess", END)
     else:
@@ -126,30 +136,35 @@ async def run_multi_agent_stream(
     thread_id: str | None = None,
     messages: list | None = None,
     mode: str = "orchestrator",
+    is_new_session: bool = False,
 ) -> AsyncGenerator[dict, None]:
     """Run the multi-agent graph and yield SSE events.
 
     Args:
         mode: "orchestrator" (default) for DAG-based execution,
               "legacy" for the old agent_router path.
+        is_new_session: If True, clear entities/pending_clarification (don't inherit from old session).
     """
     request_id = generate_request_id()
     set_request_context(request_id=request_id, session_id=session_id or user_id)
 
     use_orchestrator = mode == "orchestrator"
     graph = build_multi_agent_graph(use_orchestrator=use_orchestrator)
+
+    # thread_id: reuse provided one for same session; new session gets fresh id from frontend
     tid = thread_id or f"multi_{user_id}_{uuid.uuid4().hex[:8]}"
 
     initial_messages = messages or []
     initial_messages.append({"role": "user", "content": user_input})
 
+    # New session: clear session-specific state, keep long-term memory (profile/vector) intact
+    # Same session: omit entities/pending_clarification so checkpointer preserves them (follow-up context)
     initial_state = {
         "messages": initial_messages,
         "user_id": user_id,
         "session_id": session_id or tid,
         "intent": {},
         "user_goals": [],
-        # entities: 不覆盖，让 checkpointer 保留前一轮值，实现 follow-up 上下文继承
         "memory_chunks": [],
         "search_plan": {},
         "search_results": [],
@@ -167,9 +182,19 @@ async def run_multi_agent_stream(
         "task_dag": [],
         "task_results": {},
         "task_status": "pending",
+        "_skip_dag_executor": False,
     }
 
+    # New session: explicitly clear entities and clarification (don't inherit from old session)
+    if is_new_session:
+        initial_state["entities"] = {}
+        initial_state["pending_clarification"] = None
+
     config = {"configurable": {"thread_id": tid}}
+
+    # Initialize ResultStore for this request
+    from src.retrieval.result_store import ResultStore, set_result_store
+    set_result_store(ResultStore())
 
     try:
         results_yielded = False
@@ -302,10 +327,10 @@ async def run_multi_agent_stream(
                     yield {"event": "explanation_delta", "data": {"delta": token}}
                 yield {"event": "explanation", "data": {"text": final_response}}
         else:
-            # Non-recommendation: text only
+            # Non-recommendation: text only (clarification, error, etc.)
+            # Don't call stream_explanation — it would generate a new apology
+            # via LLM, overwriting the agent's actual response (e.g. clarification question)
             if final_response:
-                async for token in stream_explanation(state_values):
-                    yield {"event": "explanation_delta", "data": {"delta": token}}
                 yield {"event": "explanation", "data": {"text": final_response}}
 
         yield {"event": "done", "data": {"request_id": request_id}}

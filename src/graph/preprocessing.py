@@ -7,8 +7,10 @@ These are low-risk, structured tasks that should always execute deterministicall
 import asyncio
 
 from src.config import config
+from src.agents.category_detector import detect_category
 from src.agents.clarification_parser import parse_clarification_answer
 from src.agents.clarification_router import route_clarification
+from src.agents.context_hint import build_context_hint
 from src.agents.disambiguator import disambiguate
 from src.agents.entity_extractor import extract_entities
 from src.agents.entity_validator import validate_entities
@@ -37,85 +39,36 @@ def _get_user_input(state: dict) -> str:
     return getattr(msg, "content", "")
 
 
-def _detect_task_switch(current: dict, previous: dict) -> bool:
-    """Detect if user switched to a different task between turns.
-
-    Returns True if the current turn's scenario/category/product_type differs
-    significantly from the previous turn, meaning task-specific context (price,
-    scenario, soft_requirements) should NOT be inherited.
-
-    Structural fields (category, product_type, brand) can still be inherited
-    as search narrowing hints.
-    """
-    if not previous:
-        return False
-
-    prev_scenario = previous.get("scenario", "")
-    cur_scenario = current.get("scenario", "")
-
-    # Scenario changed → definite task switch (e.g. "送礼" → "面试")
-    if prev_scenario and cur_scenario and prev_scenario != cur_scenario:
-        logger.info("task_switch_detected", signal="scenario_changed",
-                    prev=prev_scenario, cur=cur_scenario)
-        return True
-
-    prev_category = previous.get("category", "")
-    cur_category = current.get("category", "")
-
-    # Cross-category switch (e.g. "服饰" → "数码")
-    if prev_category and cur_category and prev_category != cur_category:
-        logger.info("task_switch_detected", signal="category_changed",
-                    prev=prev_category, cur=cur_category)
-        return True
-
-    prev_pt = previous.get("product_type", "")
-    cur_pt = current.get("product_type", "")
-
-    # Different product_type with no overlap (e.g. "双肩包" → "手机")
-    # But NOT if current has no product_type (just a follow-up like "再推荐女士的")
-    if prev_pt and cur_pt and prev_pt != cur_pt:
-        # Check if they're in the same broad clothing family
-        _CLOTHING_TYPES = {"衬衫", "T恤", "Polo衫", "卫衣", "外套", "夹克", "西装",
-                           "西装外套", "针织衫", "羽绒服", "裤子", "裤装", "牛仔裤",
-                           "西裤", "休闲裤", "短裤", "裙子", "裙装", "半身裙",
-                           "长裙", "连衣裙", "衣服", "穿搭", "正装"}
-        if prev_pt in _CLOTHING_TYPES and cur_pt in _CLOTHING_TYPES:
-            return False  # Same clothing family, not a switch
-        logger.info("task_switch_detected", signal="product_type_changed",
-                    prev=prev_pt, cur=cur_pt)
-        return True
-
-    return False
-
-
 async def _run_normal_preprocessing(user_input: str, user_id: str, state: dict) -> dict:
     """Path A: normal intent + entity + memory + session (parallel).
 
-    Optimization: try semantic router first. If it hits (confidence >= threshold),
-    only call entity extraction LLM (1 call). If it misses, use combined
-    entity+intent LLM (1 call instead of 2).
+    New flow:
+    1. Fast category detection (rules + BGE-M3) + semantic router — parallel
+    2. Memory recall + session window + profile — parallel
+    3. Build context_hint from detection results + prev entities + session + memory
+    4. Entity extraction with context_hint (LLM decides what to keep/ignore)
+    5. Validate, disambiguate, plan search
     """
     from src.router import semantic_router
     from src.agents.entity_extractor import extract_entities_and_intent
 
     threshold = config.get("router", {}).get("semantic_threshold", 0.80)
 
-    # Fast path: semantic router for intent (no LLM)
-    sem_intent, sem_confidence = await semantic_router.classify(user_input)
+    # Fast path: semantic router + fast category detection (parallel, no LLM)
+    sem_result, cat_result = await asyncio.gather(
+        semantic_router.classify(user_input),
+        detect_category(user_input),
+    )
+    sem_intent, sem_confidence = sem_result
+    detected_category, detected_confidence = cat_result
 
     if sem_intent and sem_confidence >= threshold:
-        # Semantic router hit: only need entity extraction LLM
         logger.info("intent_resolved",
                      user_goals=sem_intent.get("user_goals", []),
                      task_type=sem_intent.get("task_type"),
                      confidence=sem_confidence, source="semantic")
-        entity_task = extract_entities(user_input)
-        combined_task = None
-    else:
-        # Semantic router miss: use combined entity+intent LLM (1 call)
-        entity_task = None
-        combined_task = extract_entities_and_intent(user_input)
 
+    # Memory recall (needs prev_category for trigger check)
     prev_category = state.get("entities", {}).get("category")
     do_recall, recall_reason = await should_recall_dual(
         user_input, user_id,
@@ -127,26 +80,16 @@ async def _run_normal_preprocessing(user_input: str, user_id: str, state: dict) 
     else:
         memory_task = _empty_list()
 
-    # Load L2a/L2b from Redis (parallel with intent/entity/memory)
+    # Load L2a/L2b from Redis + L3 profile (parallel)
     session_id = state.get("session_id", user_id)
     session_mem = get_session_memory(session_id)
-    window_task = session_mem.get_window()      # L2a sliding window
-    summary_task = session_mem.get_summary()    # L2b compressed summary
-
-    # Load L3 user profile (sync → async wrapper)
+    window_task = session_mem.get_window()
+    summary_task = session_mem.get_summary()
     profile_task = asyncio.to_thread(get_global_profile, user_id)
 
-    # Gather with either entity-only or combined entity+intent task
-    if combined_task is not None:
-        combined_result, memories, window, summary, user_profile = await asyncio.gather(
-            combined_task, memory_task, window_task, summary_task, profile_task
-        )
-        entities, intent, confidence, source = combined_result
-    else:
-        entities, memories, window, summary, user_profile = await asyncio.gather(
-            entity_task, memory_task, window_task, summary_task, profile_task
-        )
-        intent, confidence, source = sem_intent, sem_confidence, "semantic"
+    memories, window, summary, user_profile = await asyncio.gather(
+        memory_task, window_task, summary_task, profile_task,
+    )
 
     # Redis window recovery: if empty (TTL expired), fall back to PostgreSQL
     if not window:
@@ -161,40 +104,27 @@ async def _run_normal_preprocessing(user_input: str, user_id: str, state: dict) 
             logger.info("window_recovered", session_id=session_id,
                          message_count=len(pg_messages))
 
-    # Context carry-forward: inherit missing fields from previous turn's entities
+    # Build context hint for entity extraction
     prev_entities = state.get("entities", {})
-    task_switched = _detect_task_switch(entities, prev_entities)
+    context_hint = build_context_hint(
+        current_query=user_input,
+        prev_entities=prev_entities,
+        detected_category=detected_category,
+        detected_confidence=detected_confidence,
+        session_window=window,
+        memory_chunks=memories if isinstance(memories, list) else None,
+    )
+    if context_hint:
+        logger.info("context_hint_injected", hint_length=len(context_hint))
 
-    if prev_entities:
-        if task_switched:
-            # Task switch: clear ALL previous context, only use current turn's entities.
-            # Do NOT inherit category/product_type/brand — they belong to the old task.
-            _ALL_CONTEXT_FIELDS = ("category", "product_type", "brand",
-                                   "scenario", "price_min", "price_max",
-                                   "soft_requirements", "hard_constraints")
-            cleared = [f for f in _ALL_CONTEXT_FIELDS if prev_entities.get(f)]
-            for field in _ALL_CONTEXT_FIELDS:
-                if not entities.get(field) and prev_entities.get(field):
-                    entities[field] = None if not isinstance(prev_entities.get(field), list) else []
-            if cleared:
-                logger.info("context_inheritance_cleared", reason="task_switch",
-                            cleared_fields=cleared)
-        else:
-            # Same task continuation: inherit all missing fields
-            for field in ("category", "product_type", "brand", "scenario", "price_min", "price_max"):
-                if not entities.get(field) and prev_entities.get(field):
-                    entities[field] = prev_entities[field]
-                    logger.info("context_inherited", field=field,
-                                value=str(prev_entities[field])[:50])
-            # Merge hard_constraints from previous turn (e.g. price range) into current
-            prev_hc = prev_entities.get("hard_constraints", {})
-            cur_hc = entities.get("hard_constraints", {})
-            if prev_hc:
-                merged = {**prev_hc, **cur_hc}  # current overrides previous
-                entities["hard_constraints"] = merged
-                if merged != cur_hc:
-                    logger.info("context_inherited_hard_constraints",
-                                merged_keys=list(merged.keys()))
+    # Entity extraction with context hint (LLM decides field handling)
+    if sem_intent and sem_confidence >= threshold:
+        entities = await extract_entities(user_input, context_hint=context_hint)
+        intent, confidence, source = sem_intent, sem_confidence, "semantic"
+    else:
+        entities, intent, confidence, source = await extract_entities_and_intent(
+            user_input, context_hint=context_hint,
+        )
 
     if entities.get("soft_requirements"):
         entities["soft_requirements"] = normalize_soft_requirements(entities["soft_requirements"])
@@ -303,9 +233,9 @@ async def node_preprocess(state: dict) -> dict:
     """Deterministic preprocessing: intent + entity + memory (parallel).
 
     Handles three paths:
-    A. Normal: classify_intent + extract_entities + recall (parallel)
+    A. Normal: fast category detection + semantic router + entity extraction with context hint
     B. Clarification answer: parse user reply and merge into previous entities
-    C. Task switch: user changed task, fall back to Path A (with optional context carry-over)
+    C. Task switch (from clarification): user changed task, fall back to Path A
 
     Returns dict to merge into AgentState:
         intent, entities, memory_chunks, search_plan

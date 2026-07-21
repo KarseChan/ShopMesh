@@ -58,7 +58,7 @@ export default function ComparisonTable({ data }: { data: ComparisonData }) {
           <tbody>
             {dimensions.map((dim) => {
               const values = products.map((p) => {
-                const val = (p as Record<string, unknown>)[dim.key];
+                const val = (p as unknown as Record<string, unknown>)[dim.key];
                 if (val == null || (Array.isArray(val) && val.length === 0)) return null;
                 return dim.format ? dim.format(val as never) : String(val);
               });

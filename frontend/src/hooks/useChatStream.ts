@@ -73,13 +73,25 @@ export interface UseChatStreamReturn {
 }
 
 const API_BASE = "";
+const FETCH_TIMEOUT_MS = 120_000; // 2 minutes max for a single chat request
 
-export function useChatStream(sessionId?: string): UseChatStreamReturn {
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number = FETCH_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, { ...init, signal: controller.signal });
+    return resp;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export function useChatStream(opts?: { sessionId?: string; accessToken?: string; userId?: string }): UseChatStreamReturn {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [pendingOrder, setPendingOrder] = useState<Record<string, unknown> | null>(null);
   const sessionIdRef = useRef(
-    sessionId || (typeof window !== "undefined"
+    opts?.sessionId || (typeof window !== "undefined"
       ? (localStorage.getItem("shopping_session_id") || (() => {
           const id = crypto.randomUUID();
           localStorage.setItem("shopping_session_id", id);
@@ -88,29 +100,61 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
       : "")
   );
   const userIdRef = useRef(
-    typeof window !== "undefined"
+    opts?.userId || (typeof window !== "undefined"
       ? (localStorage.getItem("shopping_user_id") || (() => {
           const id = crypto.randomUUID();
           localStorage.setItem("shopping_user_id", id);
           return id;
         })())
-      : ""
+      : "")
   );
+  const tokenRef = useRef(opts?.accessToken || "");
+  // Keep token in sync when it changes
+  useEffect(() => {
+    if (opts?.accessToken) tokenRef.current = opts.accessToken;
+  }, [opts?.accessToken]);
+  // Track if the session was just renewed by /api/session/ensure
+  const isNewSessionRef = useRef(false);
 
-  // Load conversation history on mount
+  // Ensure session validity, then load conversation history on mount
   useEffect(() => {
     if (typeof window === "undefined") return;
     const sid = sessionIdRef.current;
     const uid = userIdRef.current;
     if (!sid || !uid) return;
 
-    fetch(`${API_BASE}/api/conversations/${sid}/messages?user_id=${encodeURIComponent(uid)}&limit=50`)
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (tokenRef.current) headers["Authorization"] = `Bearer ${tokenRef.current}`;
+
+    // Step 1: Ensure session is still valid (may return new session_id if expired)
+    fetch(`${API_BASE}/api/session/ensure`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ session_id: sid, user_id: uid }),
+    })
       .then((res) => res.json())
       .then((data) => {
-        const msgs = data.messages as { role: string; content: string }[];
-        if (msgs && msgs.length > 0) {
-          setMessages(msgs.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })));
+        if (data.is_new && data.session_id) {
+          // Previous session archived — switch to new one, clear messages
+          sessionIdRef.current = data.session_id;
+          localStorage.setItem("shopping_session_id", data.session_id);
+          isNewSessionRef.current = true;  // flag for next sendMessage
+          setMessages([]);
+          return; // new session has no history yet
         }
+        // Step 2: Load history for the (possibly same) session
+        const histHeaders: Record<string, string> = {};
+        if (tokenRef.current) histHeaders["Authorization"] = `Bearer ${tokenRef.current}`;
+        return fetch(`${API_BASE}/api/conversations/${sessionIdRef.current}/messages?user_id=${encodeURIComponent(uid)}&limit=50`, {
+          headers: histHeaders,
+        })
+          .then((res) => res.json())
+          .then((histData) => {
+            const msgs = histData.messages as { role: string; content: string }[];
+            if (msgs && msgs.length > 0) {
+              setMessages(msgs.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })));
+            }
+          });
       })
       .catch(() => {}); // silently ignore on first load
   }, []);
@@ -128,14 +172,24 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
     setIsLoading(true);
 
     try {
-      const response = await fetch(`${API_BASE}/api/chat`, {
+      const authHeaders: Record<string, string> = { "Content-Type": "application/json" };
+      if (tokenRef.current) authHeaders["Authorization"] = `Bearer ${tokenRef.current}`;
+
+      const chatBody: Record<string, unknown> = {
+        message: text,
+        session_id: sessionIdRef.current,
+        user_id: userIdRef.current,
+      };
+      // Pass is_new_session flag so graph clears entities (first message in a renewed session)
+      if (isNewSessionRef.current) {
+        chatBody.is_new_session = true;
+        isNewSessionRef.current = false;  // consumed — subsequent messages are follow-ups
+      }
+
+      const response = await fetchWithTimeout(`${API_BASE}/api/chat`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: text,
-          session_id: sessionIdRef.current,
-          user_id: userIdRef.current,
-        }),
+        headers: authHeaders,
+        body: JSON.stringify(chatBody),
       });
 
       if (!response.ok) {
@@ -279,13 +333,15 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
         return updated;
       });
     } catch (error) {
+      const isTimeout = error instanceof DOMException && error.name === "AbortError";
+      const errorMsg = isTimeout ? "请求超时，请稍后再试。" : "抱歉，发生了错误，请重试。";
       setMessages((prev) => {
         const updated = [...prev];
         const last = updated[updated.length - 1];
         if (last && last.role === "assistant") {
           updated[updated.length - 1] = {
             ...last,
-            content: "抱歉，发生了错误，请重试。",
+            content: errorMsg,
             isLoading: false,
           };
         }
@@ -300,9 +356,12 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
     setIsLoading(true);
 
     try {
-      const response = await fetch(`${API_BASE}/api/chat/order`, {
+      const orderHeaders: Record<string, string> = { "Content-Type": "application/json" };
+      if (tokenRef.current) orderHeaders["Authorization"] = `Bearer ${tokenRef.current}`;
+
+      const response = await fetchWithTimeout(`${API_BASE}/api/chat/order`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: orderHeaders,
         body: JSON.stringify({
           session_id: sessionIdRef.current,
           user_id: userIdRef.current,
@@ -356,9 +415,12 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
     setIsLoading(true);
 
     try {
-      const response = await fetch(`${API_BASE}/api/chat/resume`, {
+      const resumeHeaders: Record<string, string> = { "Content-Type": "application/json" };
+      if (tokenRef.current) resumeHeaders["Authorization"] = `Bearer ${tokenRef.current}`;
+
+      const response = await fetchWithTimeout(`${API_BASE}/api/chat/resume`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: resumeHeaders,
         body: JSON.stringify({
           session_id: sessionIdRef.current,
           user_id: userIdRef.current,
@@ -418,9 +480,11 @@ export function useChatStream(sessionId?: string): UseChatStreamReturn {
 
   const reportBehavior = useCallback((action: string, product: Product) => {
     // Fire-and-forget: non-blocking POST to behavior endpoint
+    const behHeaders: Record<string, string> = { "Content-Type": "application/json" };
+    if (tokenRef.current) behHeaders["Authorization"] = `Bearer ${tokenRef.current}`;
     fetch(`${API_BASE}/api/behavior`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: behHeaders,
       body: JSON.stringify({
         session_id: sessionIdRef.current,
         user_id: userIdRef.current,
@@ -527,12 +591,11 @@ function handleSSEEvent(
       appendContent((data.delta as string) || "");
       break;
     case "explanation":
-      // Compat: only use if no narrative products (non-recommendation path)
-      if (!narrative) {
-        setContent(data.text as string || "");
-        setOptions([]);
-        setQuestions([]);
-      }
+      // Always set content — for narrative path this is the final summary,
+      // for non-narrative path (clarification, error) this is the agent response
+      setContent(data.text as string || "");
+      setOptions([]);
+      setQuestions([]);
       break;
     case "interrupt":
       setPendingOrder(data);

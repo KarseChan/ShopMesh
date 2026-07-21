@@ -63,3 +63,6 @@ class AgentState(TypedDict):
     # === Narrative streaming ===
     selected_product_ids: list                  # Product IDs selected by agent for narrative streaming
     stream_narrative: bool                      # Whether to use narrative streaming for response
+
+    # === Short-circuit flags ===
+    _skip_dag_executor: bool                    # Skip dag_executor, go directly to postprocess

@@ -31,7 +31,8 @@ def _try_db() -> bool:
     return _db_available
 
 
-def save_message(user_id: str, conversation_id: str, role: str, content: str) -> None:
+def save_message(user_id: str, conversation_id: str, role: str, content: str,
+                  turn_id: int = 0) -> None:
     """Persist a single message to PostgreSQL.
 
     Synchronous — intended to be called via asyncio.to_thread from async context.
@@ -48,11 +49,13 @@ def save_message(user_id: str, conversation_id: str, role: str, content: str) ->
             conversation_id=conversation_id,
             role=role,
             content=content,
+            turn_id=turn_id,
         )
         session.add(msg)
         session.commit()
         session.close()
-        logger.info("message_saved", user_id=user_id, conversation_id=conversation_id, role=role)
+        logger.info("message_saved", user_id=user_id, conversation_id=conversation_id,
+                     role=role, turn_id=turn_id)
     except Exception as e:
         logger.warning("message_save_failed", error=str(e))
 
@@ -140,3 +143,42 @@ def get_recent_turns(user_id: str, conversation_id: str, limit: int = 10) -> lis
     """
     messages = get_messages(user_id, conversation_id, limit=limit)
     return [{"role": m["role"], "content": m["content"]} for m in messages]
+
+
+def get_turns_in_range(user_id: str, conversation_id: str,
+                        from_turn: int, to_turn: int) -> list[dict]:
+    """Get messages for a range of turns (inclusive). Used by batch preference extraction.
+
+    Returns list of {"role", "content", "turn_id"} ordered by turn_id then created_at.
+    Each turn has 2 messages (user + assistant).
+    """
+    if not _try_db():
+        return []
+    try:
+        from src.db.engine import get_session
+        from src.db.models import ConversationMessage
+        from sqlmodel import col
+        session = get_session()
+
+        rows = session.exec(
+            ConversationMessage.select()
+            .where(
+                ConversationMessage.user_id == user_id,
+                ConversationMessage.conversation_id == conversation_id,
+                ConversationMessage.turn_id >= from_turn,
+                ConversationMessage.turn_id <= to_turn,
+            )
+            .order_by(
+                col(ConversationMessage.turn_id).asc(),
+                col(ConversationMessage.created_at).asc(),
+            )
+        ).all()
+        session.close()
+
+        return [
+            {"role": r.role, "content": r.content, "turn_id": r.turn_id}
+            for r in rows
+        ]
+    except Exception as e:
+        logger.warning("get_turns_in_range_failed", error=str(e))
+        return []

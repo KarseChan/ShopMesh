@@ -77,10 +77,11 @@ def write_vector_memory(
     soft_time_limit=60,
     time_limit=90,
 )
-def batch_classify_preferences(session_id: str, user_id: str, category: str):
-    """Batch LLM preference classification — every 3 turns."""
+def batch_classify_preferences(session_id: str, user_id: str, category: str,
+                                up_to_turn: int = 0):
+    """Batch LLM preference classification — every N turns (PG-based tracking)."""
     from src.graph.postprocessing import _batch_classify_preferences
-    _run_async(_batch_classify_preferences(session_id, user_id, category))
+    _run_async(_batch_classify_preferences(session_id, user_id, category, up_to_turn))
 
 
 @celery_app.task(
@@ -122,10 +123,11 @@ def save_conversation_message(
     session_id: str,
     role: str,
     content: str,
+    turn_id: int = 0,
 ):
-    """Persist a conversation message to PostgreSQL."""
+    """Persist a conversation message to PostgreSQL with turn_id."""
     from src.memory.conversation_store import save_message
-    save_message(user_id, session_id, role, content)
+    save_message(user_id, session_id, role, content, turn_id=turn_id)
 
 
 @celery_app.task(

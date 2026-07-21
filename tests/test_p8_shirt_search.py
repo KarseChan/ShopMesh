@@ -312,6 +312,6 @@ async def test_rank_with_soft_requirements():
         ],
     }
 
-    ranked = rank(products, entities=entities)
+    ranked = await rank(products, entities=entities)
     # 衬衫应该排第一（product_type_match + attribute_match 双重优势）
     assert ranked[0]["product_id"] == "prod_shirt"

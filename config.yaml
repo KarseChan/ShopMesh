@@ -23,6 +23,16 @@ embedding:
     base_url: http://localhost:11434
     dimensions: 1024
 
+# Reranker (cross-encoder semantic reranking)
+reranker:
+  provider: flag_embedding
+  model: BAAI/bge-reranker-v2-m3
+  enabled: true
+  trigger:
+    min_soft_requirements: 2
+    score_gap_threshold: 0.1
+    max_candidates: 50
+
 # Vector DB
 vector_db:
   provider: qdrant
@@ -58,6 +68,16 @@ agents:
     response_type: comparison_table
     tools: [product_search, product_detail_batch, price_compare, review_summary]
 
+# Session lifecycle
+session:
+  idle_timeout: 3600          # 1h inactivity → idle
+  archive_timeout: 86400      # 24h inactivity → archived (new session on next visit)
+  messages_ttl: 86400         # 24h — Redis L2a sliding window, refreshed on each write
+  summary_ttl: 604800         # 7d — Redis L2b compressed summary, refreshed on each trim
+  tool_result_ttl: 7200       # 2h — large tool result persistence
+  dag_ttl: 86400              # 24h — DAG/task state in Redis
+  lock_ttl: 30                # 30s — batch classification SETNX lock
+
 # Memory
 memory:
   context_window: 8192
@@ -65,6 +85,8 @@ memory:
   sliding_window_rounds: 5
   summary_max_words: 200
   recall_top_k: 5
+  batch_extract_interval: 3       # trigger batch preference extraction every N turns
+  batch_extract_min_gap_sec: 300  # minimum 5 minutes between extractions
 
 # Celery (task queue)
 celery:

@@ -21,7 +21,12 @@ logger = get_logger("session_memory")
 WINDOW_SIZE: int = config.get("memory", {}).get("sliding_window_rounds", 5)
 MSG_KEY = "tenant:{tid}:session:{sid}:messages"
 SUMMARY_KEY = "tenant:{tid}:session:{sid}:summary"
-MSG_TTL = 3600 * 24  # 24 hours
+
+# Config-driven TTLs (sliding — refreshed on each write)
+_session_cfg = config.get("session", {})
+MSG_TTL = _session_cfg.get("messages_ttl", 86400)       # 24h default
+SUMMARY_TTL = _session_cfg.get("summary_ttl", 604800)    # 7d default
+TOOL_RESULT_TTL = _session_cfg.get("tool_result_ttl", 7200)  # 2h default
 
 # Lua script: atomically verify head → LTRIM + SET summary
 # Keys: [msg_key, summary_key]
@@ -140,7 +145,7 @@ class SessionMemory:
             _TRIM_LUA,
             2,  # number of keys
             msg_key, summary_key,
-            evict_count, new_summary, MSG_TTL, expected_json,
+            evict_count, new_summary, SUMMARY_TTL, expected_json,
         )
 
         if result == 1:
@@ -204,7 +209,7 @@ class SessionMemory:
             Preview string with persistence marker
         """
         key = f"tool_result:{self.session_id}:{tool_use_id}"
-        await self._redis.set(key, content, ex=MSG_TTL)
+        await self._redis.set(key, content, ex=TOOL_RESULT_TTL)
         preview = content[:preview_chars]
         logger.info("tool_result_persisted",
                      session_id=self.session_id,

@@ -138,6 +138,15 @@ async def execute_tool(name: str, args: dict) -> dict:
         if inspect.isawaitable(result):
             result = await result
 
+        # Extract _full_products: store in ResultStore, keep only slim results
+        if isinstance(result, dict) and "_full_products" in result:
+            full_products = result.pop("_full_products")
+            if full_products:
+                from src.retrieval.result_store import get_result_store
+                store = get_result_store()
+                result_id = store.store_products(full_products, tool_name=name)
+                result["result_id"] = result_id
+
         result_log = _extract_result_for_log(name, result)
         logger.info("tool_executed", tool=name, args=args_log, result=result_log)
 

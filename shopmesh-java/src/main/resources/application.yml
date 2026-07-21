@@ -1,5 +1,5 @@
 server:
-  port: 8080
+  port: 18080
 
 spring:
   application:
@@ -7,7 +7,7 @@ spring:
 
   # PostgreSQL
   datasource:
-    url: ${DATABASE_URL:postgresql://postgres:password@localhost:5432/shopping_agent}
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/shopping_agent}
     driver-class-name: org.postgresql.Driver
     username: ${DB_USER:postgres}
     password: ${DB_PASSWORD:password}

@@ -5,17 +5,20 @@ Runs after Agent finishes.
 Main path (sync, < 5ms):
   - L2a: add_turn to Redis sliding window
   - L1 rule filter: noise → skip, strong signal → write immediately
+  - PG turn tracking: increment turn_count, check extraction eligibility
 
 Background path (Celery tasks):
   - L2b: trim evicted turns → LLM compression
-  - L2c: batch LLM preference classification (every 3 turns, with SETNX lock)
+  - L2c: batch LLM preference classification (every N turns, PG-based tracking)
   - Conversation persistence, vector memory writes, profile updates
 """
 
 import asyncio
 import json
 import re
+from datetime import datetime
 
+from src.config import config
 from src.memory.session_memory import get_session_memory
 from src.models.llm_client import get_llm
 from src.observability.logger import get_logger
@@ -131,26 +134,38 @@ def _classify_memory_signal(user_input: str, entities: dict, intent: str) -> str
     return None
 
 
-async def _batch_classify_preferences(session_id: str, user_id: str, category: str) -> None:
+async def _batch_classify_preferences(
+    session_id: str, user_id: str, category: str, up_to_turn: int,
+) -> None:
     """Level 2: batch LLM preference classification (background task).
 
-    Reads recent 3 turns from Redis, sends to LLM for preference extraction.
+    Reads unclassified turns from PG conversation_messages (turn_id based),
+    sends to LLM for preference extraction.
     Results written to L2c vector memory AND L3 user profile.
     """
     from src.db.redis_client import get_redis
     redis = get_redis()
     lock_key = f"lock:batch_memory:{session_id}"
+    lock_ttl = config.get("session", {}).get("lock_ttl", 30)
 
     try:
-        session_mem = get_session_memory(session_id)
-        window = await session_mem.get_window()
+        # Read unclassified turns from PG instead of Redis window
+        from src.memory.session_manager import get_extraction_state, update_extraction_state
+        from src.memory.conversation_store import get_turns_in_range
 
-        if len(window) < 6:  # at least 3 turns (6 messages)
+        ext_state = await asyncio.to_thread(get_extraction_state, session_id)
+        from_turn = ext_state["last_extracted_turn"]
+
+        turns = await asyncio.to_thread(
+            get_turns_in_range, user_id, session_id, from_turn + 1, up_to_turn
+        )
+
+        if len(turns) < 6:  # at least 3 turns (6 messages)
+            # Not enough new turns, just update state without extraction
+            await asyncio.to_thread(update_extraction_state, session_id, user_id, up_to_turn)
             return
 
-        # Take the most recent 3 turns
-        recent = window[-6:]
-        conversation = "\n".join(f"{m['role']}: {m['content']}" for m in recent)
+        conversation = "\n".join(f"{m['role']}: {m['content']}" for m in turns)
 
         llm = get_llm()
         result = await llm.chat_json([
@@ -186,6 +201,9 @@ async def _batch_classify_preferences(session_id: str, user_id: str, category: s
                 logger.info("batch_preference_saved",
                            text=pref["text"][:50],
                            pref_type=pref_type)
+
+        # Update extraction state in PG
+        await asyncio.to_thread(update_extraction_state, session_id, user_id, up_to_turn)
 
     except Exception as e:
         logger.error("batch_classify_error", error=str(e))
@@ -241,13 +259,17 @@ async def node_postprocess(state: dict) -> dict:
         save_conversation_message,
     )
 
+    # ---- PG turn tracking: assign turn_id for this turn ----
+    from src.memory.session_manager import increment_turn_count
+    current_turn = await asyncio.to_thread(increment_turn_count, session_id)
+
     # ---- L2a: Write sliding window (sync, Redis RPUSH < 1ms) ----
     session_mem = get_session_memory(session_id)
     await session_mem.add_turn(user_input, response)
 
-    # ---- Persistent conversation storage → Celery ----
-    save_conversation_message.delay(user_id, session_id, "user", user_input)
-    save_conversation_message.delay(user_id, session_id, "assistant", response)
+    # ---- Persistent conversation storage → Celery (with turn_id) ----
+    save_conversation_message.delay(user_id, session_id, "user", user_input, current_turn)
+    save_conversation_message.delay(user_id, session_id, "assistant", response, current_turn)
 
     # ---- L2b: Trim evicted turns to summary → Celery ----
     from src.auth.context import get_tenant_id
@@ -292,22 +314,35 @@ async def node_postprocess(state: dict) -> dict:
 
     else:
         # Middle ground: defer to batch LLM classification
-        from src.db.redis_client import get_redis
-        redis = get_redis()
-        counter_key = f"session:{session_id}:turn_count"
-        count = await redis.incr(counter_key)
-        await redis.expire(counter_key, 3600)
+        # turn_count already incremented above; check extraction eligibility
+        from src.memory.session_manager import get_extraction_state
 
-        if count % 3 == 0:
-            # SETNX lock: only one batch task per session at a time
+        ext_state = await asyncio.to_thread(get_extraction_state, session_id)
+
+        batch_interval = config.get("memory", {}).get("batch_extract_interval", 3)
+        min_gap_sec = config.get("memory", {}).get("batch_extract_min_gap_sec", 300)
+        unclassified = current_turn - ext_state["last_extracted_turn"]
+        time_since_last = (datetime.utcnow() - ext_state["last_extracted_at"]).total_seconds()
+
+        should_extract = (
+            unclassified >= batch_interval
+            and time_since_last >= min_gap_sec
+        )
+
+        if should_extract:
+            from src.db.redis_client import get_redis
+            redis = get_redis()
             lock_key = f"lock:batch_memory:{session_id}"
-            acquired = await redis.set(lock_key, "1", nx=True, ex=10)
+            lock_ttl = config.get("session", {}).get("lock_ttl", 30)
+            acquired = await redis.set(lock_key, "1", nx=True, ex=lock_ttl)
             if acquired:
-                batch_classify_preferences.delay(session_id, user_id, category)
-                logger.info("batch_triggered", turn_count=count)
+                batch_classify_preferences.delay(session_id, user_id, category, current_turn)
+                logger.info("batch_triggered", current_turn=current_turn,
+                            unclassified=unclassified)
             else:
-                logger.info("batch_skipped", reason="lock_held", turn_count=count)
+                logger.info("batch_skipped", reason="lock_held", current_turn=current_turn)
         else:
-            logger.info("memory_deferred", user_id=user_id, turn_count=count)
+            logger.info("memory_deferred", user_id=user_id, current_turn=current_turn,
+                        unclassified=unclassified)
 
     return {}

@@ -49,7 +49,7 @@ async def node_fallback(state: dict) -> dict:
 
     # Step 3: Rank if not already ranked
     if products and not any(p.get("rank_score") for p in products):
-        products = rank(products, entities=entities)
+        products = await rank(products, entities=entities)
 
     # Step 4: Generate simple explanation
     if products:

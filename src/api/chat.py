@@ -71,6 +71,22 @@ def _sse_event(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+@app.post("/api/session/ensure")
+async def ensure_session_endpoint(request: Request):
+    """Ensure session is valid. Returns new session_id if the old one expired.
+
+    Request body: {"session_id": str, "user_id": str}
+    Response: {"session_id": str, "is_new": bool, "prev_session_id": str|null}
+    """
+    import asyncio
+    body = await request.json()
+    session_id = body.get("session_id", "")
+    user_id = body.get("user_id", session_id)
+    from src.memory.session_manager import ensure_session_sync
+    result = await asyncio.to_thread(ensure_session_sync, session_id, user_id)
+    return result
+
+
 @app.post("/api/chat")
 async def chat(request: Request):
     """Send a message and receive SSE stream of shopping results.
@@ -86,6 +102,7 @@ async def chat(request: Request):
     session_id = body.get("session_id", str(uuid.uuid4()))
     user_id = body.get("user_id", session_id)  # fallback for backward compat
     mode = body.get("mode", "multi_agent")
+    is_new_session = body.get("is_new_session", False)
 
     # Input validation
     try:
@@ -105,12 +122,12 @@ async def chat(request: Request):
                     data = event.get("data", {})
                     yield _sse_event(etype, data)
             elif mode == "multi_agent":
-                async for event in run_multi_agent_stream(message, user_id=user_id, session_id=session_id, thread_id=f"multi-{session_id}", mode="orchestrator"):
+                async for event in run_multi_agent_stream(message, user_id=user_id, session_id=session_id, thread_id=f"multi-{session_id}", mode="orchestrator", is_new_session=is_new_session):
                     etype = event.get("event", "unknown")
                     data = event.get("data", {})
                     yield _sse_event(etype, data)
             elif mode == "multi_agent_legacy":
-                async for event in run_multi_agent_stream(message, user_id=user_id, session_id=session_id, thread_id=f"multi-{session_id}", mode="legacy"):
+                async for event in run_multi_agent_stream(message, user_id=user_id, session_id=session_id, thread_id=f"multi-{session_id}", mode="legacy", is_new_session=is_new_session):
                     etype = event.get("event", "unknown")
                     data = event.get("data", {})
                     yield _sse_event(etype, data)

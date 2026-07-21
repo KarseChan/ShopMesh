@@ -13,9 +13,19 @@ from unittest.mock import patch, AsyncMock
 class TestOutputGuardIntegration:
     """Verify output_guard is called in specialized_agents._run_agent_loop."""
 
-    def test_extract_search_results_from_log(self):
-        """Helper should extract items from product_search tool log."""
+    def test_extract_search_results_from_result_store(self):
+        """Should retrieve full products from result store via result_id."""
         from src.graph.specialized_agents import _extract_search_results_from_log
+        from src.retrieval.result_store import ResultStore, set_result_store
+
+        store = ResultStore()
+        set_result_store(store)
+
+        full_products = [
+            {"product_id": "P001", "name": "Product A", "price": 99, "brand": "A"},
+            {"product_id": "P002", "name": "Product B", "price": 199, "brand": "B"},
+        ]
+        result_id = store.store_products(full_products, tool_name="product_search")
 
         tool_log = [
             {
@@ -23,10 +33,11 @@ class TestOutputGuardIntegration:
                 "result": {
                     "success": True,
                     "data": {
-                        "items": [
-                            {"product_id": "P001", "name": "Product A"},
-                            {"product_id": "P002", "name": "Product B"},
+                        "results": [
+                            {"product_id": "P001", "name": "Product A", "rank_score": 0.9},
+                            {"product_id": "P002", "name": "Product B", "rank_score": 0.8},
                         ],
+                        "result_id": result_id,
                         "total": 2,
                     },
                 },
@@ -36,10 +47,40 @@ class TestOutputGuardIntegration:
         results = _extract_search_results_from_log(tool_log)
         assert len(results) == 2
         assert results[0]["product_id"] == "P001"
+        assert results[0]["brand"] == "A"  # Full data from store
+
+    def test_extract_search_results_fallback_slim(self):
+        """Should fallback to slim results when result_id is missing."""
+        from src.graph.specialized_agents import _extract_search_results_from_log
+        from src.retrieval.result_store import ResultStore, set_result_store
+
+        set_result_store(ResultStore())
+
+        tool_log = [
+            {
+                "tool": "product_search",
+                "result": {
+                    "success": True,
+                    "data": {
+                        "results": [
+                            {"product_id": "P001", "name": "Product A", "rank_score": 0.9},
+                        ],
+                        "total": 1,
+                    },
+                },
+            },
+        ]
+
+        results = _extract_search_results_from_log(tool_log)
+        assert len(results) == 1
+        assert results[0]["product_id"] == "P001"
 
     def test_extract_search_results_empty_log(self):
         """Should return empty list when no search tools were called."""
         from src.graph.specialized_agents import _extract_search_results_from_log
+        from src.retrieval.result_store import ResultStore, set_result_store
+
+        set_result_store(ResultStore())
 
         tool_log = [
             {"tool": "ask_clarification", "result": {"data": {"should_ask": True}}},
@@ -48,8 +89,15 @@ class TestOutputGuardIntegration:
         assert results == []
 
     def test_extract_search_results_multi_query(self):
-        """Should extract from multi_query_search results."""
+        """Should extract from multi_query_search results via result store."""
         from src.graph.specialized_agents import _extract_search_results_from_log
+        from src.retrieval.result_store import ResultStore, set_result_store
+
+        store = ResultStore()
+        set_result_store(store)
+
+        full_products = [{"product_id": "P003", "name": "Product C"}]
+        result_id = store.store_products(full_products, tool_name="multi_query_search")
 
         tool_log = [
             {
@@ -57,7 +105,8 @@ class TestOutputGuardIntegration:
                 "result": {
                     "success": True,
                     "data": {
-                        "items": [{"product_id": "P003"}],
+                        "results": [{"product_id": "P003", "rank_score": 0.85}],
+                        "result_id": result_id,
                         "total": 1,
                     },
                 },
@@ -65,6 +114,7 @@ class TestOutputGuardIntegration:
         ]
         results = _extract_search_results_from_log(tool_log)
         assert len(results) == 1
+        assert results[0]["product_id"] == "P003"
 
 
 class TestPermissionGuardIntegration:

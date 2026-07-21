@@ -297,7 +297,14 @@ async def _attempt_repair(raw_text: str, response_type: str, messages: list[dict
 
 
 def _extract_search_results_from_log(tool_log: list[dict]) -> list[dict]:
-    """Extract product search results from tool call log for output guard validation."""
+    """Extract product search results from result store for output guard validation.
+
+    Full product data is stored in ResultStore by tool_executor middleware.
+    Falls back to slim results if result_id is not available.
+    """
+    from src.retrieval.result_store import get_result_store
+    store = get_result_store()
+
     search_results = []
     for entry in tool_log:
         tool_name = entry.get("tool", "")
@@ -305,8 +312,13 @@ def _extract_search_results_from_log(tool_log: list[dict]) -> list[dict]:
         data = result.get("data", result) if isinstance(result, dict) else {}
 
         if tool_name in ("product_search", "multi_query_search") and isinstance(data, dict):
-            items = data.get("items", [])
-            if items:
+            # Prefer full products from result store
+            result_id = data.get("result_id", "")
+            if result_id:
+                search_results.extend(store.get_products(result_id))
+            else:
+                # Fallback: slim results (only have product_id for traceability)
+                items = data.get("results", [])
                 search_results.extend(items)
         elif tool_name == "product_detail_batch" and isinstance(data, list):
             search_results.extend(data)

@@ -24,7 +24,7 @@ ShopMesh — 基于 LangGraph 的智能导购系统，**双语言微服务架构
 ## Tech Stack
 
 - **Java 控制面**: Spring Boot 3.4 / Spring Security / Spring Data JPA / Flyway / jjwt (RSA-256)
-- **Python Agent**: Python 3.11+ / LangGraph / FastAPI / httpx / Celery
+- **Python Agent**: Python 3.11+ (venv uses 3.12) / LangGraph / FastAPI / httpx / Celery
 - **Vector DB**: Qdrant + BGE-M3 (Ollama)
 - **Storage**: PostgreSQL 16 (shared, Flyway schema) / Redis 7 (session + Celery result backend)
 - **Message Queue**: RabbitMQ (4 queues: memory, cleanup, default, events)
@@ -79,7 +79,7 @@ npm run lint
 
 ### Docker Compose
 ```bash
-docker compose up           # all 8 services (traefik, java-api, python-agent, celery-worker, celery-beat, postgres, redis, qdrant, rabbitmq)
+docker compose up           # all 9 services (traefik, java-api, python-agent, celery-worker, celery-beat, postgres, redis, qdrant, rabbitmq)
 docker compose up -d        # detached
 ```
 
@@ -96,6 +96,7 @@ Client → Traefik (:80)
 - **Java 控制面** (`shopmesh-java/`): Auth (register/login/refresh/me)、API Key CRUD、RSA JWT 签发、JWKS 公钥端点、用户事件发布
 - **Python Agent 引擎** (`src/`): LangGraph Agent、Tools、Memory、Celery 后台任务
 - **共享**: PostgreSQL (Java Flyway 管理 schema)、Redis、Qdrant、RabbitMQ
+- **数据库迁移**: Java 用 Flyway (`shopmesh-java/src/main/resources/db/migration/`)，Python 用 Alembic (`alembic/`)，两者写同一个 PostgreSQL
 
 ### JWT 跨语言信任
 
@@ -200,13 +201,15 @@ DAG 任务的 Redis 持久化，支持跨会话恢复：
 
 ## Development Guidelines
 
-- **Config**: 一切在 `config.yaml`，密钥用 `${ENV_VAR}`
+- **Config**: 一切在 `config.yaml`，密钥用 `${ENV_VAR}`（`src/config.py` 加载时自动解析环境变量）
+- **Alembic**: `alembic.ini` 在项目根目录，`script_location = ./alembic`，`sys.path = .`（确保能导入 `src/`）
 - **LLM/Embedding**: 必须 async（`asyncio.to_thread` 包装同步调用）
 - **State**: 只存工作记忆，不存执行日志
 - **Commit messages**: `<动词>: <简述>` (e.g., `fix: 修复 LLM JSON 解析失败`)
 - **Problem reports**: 记录到 `reports/problem.md`
 - **开发节奏**: 用户控制，不自动推进下一任务
 - **转化原则**: 原有 shopping_graph.py 及 agents/ 函数**不删除、不修改**，新旧架构通过 API `mode` 参数切换
+- **测试命名**: 测试文件 `test_t05.py` ~ `test_t36.py` 对应开发任务编号，功能集成测试用 `test_*_integration.py` / `test_p*_e2e.py`
 
 ## Forbidden
 

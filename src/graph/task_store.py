@@ -18,8 +18,9 @@ from src.observability.logger import get_logger
 
 logger = get_logger("task_store")
 
-# TTL for DAG and task keys (24 hours)
-_DAG_TTL = 3600 * 24
+# TTL for DAG and task keys — config-driven
+from src.config import config as _cfg
+_DAG_TTL = _cfg.get("session", {}).get("dag_ttl", 86400)
 
 
 def _dag_key(session_id: str, dag_id: str) -> str:

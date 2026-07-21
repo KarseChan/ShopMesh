@@ -61,6 +61,10 @@ class SessionRecord(SQLModel, table=True):
     tenant_id: str = Field(index=True, default="")
     session_id: str = Field(index=True, unique=True)
     user_id: str = Field(index=True)
+    status: str = "active"                              # active / idle / archived
+    last_active_at: datetime = Field(default_factory=datetime.utcnow)
+    turn_count: int = 0                                 # cumulative turns in this session
+    last_extracted_turn: int = 0                        # last turn processed by batch preference extraction
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -98,7 +102,20 @@ class ConversationMessage(SQLModel, table=True):
     user_id: str = Field(index=True)
     role: str  # "user" / "assistant"
     content: str
+    turn_id: int = 0                                    # which turn this message belongs to (shared by user+assistant)
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class PreferenceExtractionState(SQLModel, table=True):
+    __tablename__ = "preference_extraction_state"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: str = Field(index=True, default="")
+    session_id: str = Field(index=True)
+    user_id: str = Field(index=True)
+    last_extracted_turn: int = 0
+    last_extracted_at: datetime = Field(default_factory=datetime.utcnow)
+    extraction_count: int = 0
 
 
 class ApiKey(SQLModel, table=True):
