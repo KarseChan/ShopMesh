@@ -89,15 +89,13 @@ async def ensure_session_endpoint(request: Request):
 async def chat(request: Request):
     """Send a message and receive SSE stream of shopping results.
 
-    Request body: {"message": str, "session_id": str?, "mode": str?}
-    默认(不传 mode 或任意值):确定性意图路由 → 每意图一个 ReAct agent(legacy 主路径)。
-    mode="multi_agent_orchestrator":opt-in DAG 编排(复合意图拆解，较慢)。
+    Request body: {"message": str, "session_id": str?}
+    单一主路径:确定性意图路由 → 每意图一个 ReAct agent。
     """
     body = await request.json()
     message = body.get("message", "")
     session_id = body.get("session_id", str(uuid.uuid4()))
     user_id = body.get("user_id", session_id)  # fallback for backward compat
-    mode = body.get("mode", "multi_agent")
     is_new_session = body.get("is_new_session", False)
 
     # Input validation
@@ -112,10 +110,8 @@ async def chat(request: Request):
 
     async def event_stream():
         try:
-            # 单一主路径：确定性意图路由 → 每意图一个 ReAct agent(legacy)。
-            # orchestrator DAG（复合意图拆解，较慢）仅在显式 mode="multi_agent_orchestrator" 时启用。
-            exec_mode = "orchestrator" if mode == "multi_agent_orchestrator" else "legacy"
-            async for event in run_multi_agent_stream(message, user_id=user_id, session_id=session_id, thread_id=f"multi-{session_id}", mode=exec_mode, is_new_session=is_new_session):
+            # 单一主路径：确定性意图路由 → 每意图一个 ReAct agent。
+            async for event in run_multi_agent_stream(message, user_id=user_id, session_id=session_id, thread_id=f"multi-{session_id}", is_new_session=is_new_session):
                 etype = event.get("event", "unknown")
                 data = event.get("data", {})
                 yield _sse_event(etype, data)

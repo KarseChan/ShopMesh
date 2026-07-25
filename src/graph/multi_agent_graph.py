@@ -1,16 +1,11 @@
 """Multi-Agent Graph — intent-specific specialized agents with shared preprocessing.
 
-Flow (new Orchestrator DAG path):
-    preprocess → orchestrator → dag_executor → postprocess → END
-
-Flow (legacy path, preserved as fallback):
+Flow (single main path):
     preprocess → agent_router → search_recommend/detail_compare agent
         → (continue/end/fallback) → postprocess → END
 
 Each agent has its own prompt, tool subset, and max_iterations.
 The router is deterministic (if/else on user_goal), no LLM involved.
-
-The original shopping_agent.py is preserved intact.
 """
 
 import traceback
@@ -22,9 +17,7 @@ from langgraph.graph import END, StateGraph
 
 from src.graph.agent_state import AgentState
 from src.graph.checkpointer import get_checkpointer
-from src.graph.dag_executor import node_dag_executor
 from src.graph.fallback import node_fallback
-from src.graph.orchestrator import node_orchestrator
 from src.graph.postprocessing import node_postprocess
 from src.graph.preprocessing import node_preprocess
 from src.graph.specialized_agents import (
@@ -47,8 +40,6 @@ logger = get_logger("multi_agent")
 # feedback BEFORE the slow work runs (embedding + search + LLM), not after it.
 _PROGRESS_ON_START: dict[str, tuple[str, str]] = {
     "preprocess": ("understanding", "正在理解您的需求..."),
-    "orchestrator": ("planning", "正在规划任务..."),
-    "dag_executor": ("executing", "正在执行..."),
     "search_recommend_agent": ("searching", "正在搜索并为您筛选商品..."),
     "detail_compare_agent": ("comparing", "正在对比商品详情..."),
 }
@@ -63,77 +54,46 @@ def _friendly_error(e: Exception) -> str:
     return "抱歉，处理过程中出现了问题，请稍后再试。"
 
 
-def build_multi_agent_graph(use_orchestrator: bool = True):
-    """Build the multi-agent graph.
+def build_multi_agent_graph():
+    """Build the multi-agent graph (single main path).
 
-    When use_orchestrator=True (default), uses the new Orchestrator DAG path:
-        preprocess → orchestrator → dag_executor → postprocess → END
+    preprocess → agent_router → search_recommend/detail_compare → should_continue → postprocess → END
 
-    When use_orchestrator=False, uses the legacy path:
-        preprocess → agent_router → search_recommend/detail_compare → should_continue → postprocess → END
-
-    Both paths share preprocessing and postprocessing.
+    The router is deterministic (if/else on user_goal), each agent runs a ReAct
+    loop over its own tool subset.
     """
     graph = StateGraph(AgentState)
 
-    # Shared nodes
     graph.add_node("preprocess", node_preprocess)
     graph.add_node("postprocess", node_postprocess)
+    graph.add_node("agent_router", node_agent_router)
+    graph.add_node("fallback", node_fallback)
+    graph.add_node("search_recommend_agent", node_search_recommend_agent)
+    graph.add_node("detail_compare_agent", node_detail_compare_agent)
 
-    if use_orchestrator:
-        # === New Orchestrator DAG path ===
-        graph.add_node("orchestrator", node_orchestrator)
-        graph.add_node("dag_executor", node_dag_executor)
+    # Entry: preprocess → router
+    graph.set_entry_point("preprocess")
+    graph.add_edge("preprocess", "agent_router")
 
-        # Entry: preprocess → orchestrator → (dag_executor | postprocess) → END
-        graph.set_entry_point("preprocess")
-        graph.add_edge("preprocess", "orchestrator")
+    # Router → agent (deterministic conditional)
+    # __order__ is handled by agent_router directly (sets final_response),
+    # so route_to_agent returns "end" for it — skip agent nodes entirely.
+    graph.add_conditional_edges("agent_router", route_to_agent, {
+        "search_recommend_agent": "search_recommend_agent",
+        "detail_compare_agent": "detail_compare_agent",
+        "__order__": "postprocess",
+    })
 
-        # Conditional: skip dag_executor when clarification is short-circuited
-        def after_orchestrator(state):
-            if state.get("_skip_dag_executor"):
-                return "postprocess"
-            return "dag_executor"
-
-        graph.add_conditional_edges("orchestrator", after_orchestrator, {
-            "dag_executor": "dag_executor",
-            "postprocess": "postprocess",
-        })
-        graph.add_edge("dag_executor", "postprocess")
-        graph.add_edge("postprocess", END)
-    else:
-        # === Legacy path (preserved as fallback) ===
-        graph.add_node("agent_router", node_agent_router)
-        graph.add_node("fallback", node_fallback)
-        graph.add_node("search_recommend_agent", node_search_recommend_agent)
-        graph.add_node("detail_compare_agent", node_detail_compare_agent)
-
-        # Entry: preprocess → router
-        graph.set_entry_point("preprocess")
-        graph.add_edge("preprocess", "agent_router")
-
-        # Router → agent (deterministic conditional)
-        # __order__ is handled by agent_router directly (sets final_response),
-        # so route_to_agent returns "end" for it — skip agent nodes entirely.
-        graph.add_conditional_edges("agent_router", route_to_agent, {
-            "search_recommend_agent": "search_recommend_agent",
-            "detail_compare_agent": "detail_compare_agent",
-            "__order__": "postprocess",
+    # Each agent → should_continue → self / postprocess / fallback
+    for agent_node in ("search_recommend_agent", "detail_compare_agent"):
+        graph.add_conditional_edges(agent_node, should_continue, {
+            "continue": agent_node,
+            "end": "postprocess",
+            "fallback": "fallback",
         })
 
-        # Each agent → should_continue → self / postprocess / fallback
-        for agent_node in ("search_recommend_agent", "detail_compare_agent"):
-            graph.add_conditional_edges(agent_node, should_continue, {
-                "continue": agent_node,
-                "end": "postprocess",
-                "fallback": "fallback",
-            })
-
-        # Fallback → postprocess
-        graph.add_edge("fallback", "postprocess")
-
-        # Postprocess → END
-        graph.add_edge("postprocess", END)
+    graph.add_edge("fallback", "postprocess")
+    graph.add_edge("postprocess", END)
 
     checkpointer = get_checkpointer("memory")
     return graph.compile(checkpointer=checkpointer)
@@ -145,21 +105,17 @@ async def run_multi_agent_stream(
     session_id: str | None = None,
     thread_id: str | None = None,
     messages: list | None = None,
-    mode: str = "orchestrator",
     is_new_session: bool = False,
 ) -> AsyncGenerator[dict, None]:
     """Run the multi-agent graph and yield SSE events.
 
     Args:
-        mode: "orchestrator" (default) for DAG-based execution,
-              "legacy" for the old agent_router path.
         is_new_session: If True, clear entities/pending_clarification (don't inherit from old session).
     """
     request_id = generate_request_id()
     set_request_context(request_id=request_id, session_id=session_id or user_id)
 
-    use_orchestrator = mode == "orchestrator"
-    graph = build_multi_agent_graph(use_orchestrator=use_orchestrator)
+    graph = build_multi_agent_graph()
 
     # thread_id: reuse provided one for same session; new session gets fresh id from frontend
     tid = thread_id or f"multi_{user_id}_{uuid.uuid4().hex[:8]}"
@@ -188,11 +144,6 @@ async def run_multi_agent_stream(
         "active_agent": "",
         "response_type": "",
         "response_data": {},
-        # Orchestrator DAG fields
-        "task_dag": [],
-        "task_results": {},
-        "task_status": "pending",
-        "_skip_dag_executor": False,
     }
 
     # New session: explicitly clear entities and clarification (don't inherit from old session)
@@ -234,26 +185,6 @@ async def run_multi_agent_stream(
                 if node_name == "preprocess":
                     yield {"event": "intent", "data": {"intent": output.get("intent", "")}}
                     yield {"event": "entities", "data": {"entities": output.get("entities", {})}}
-
-                elif node_name == "orchestrator":
-                    task_dag = output.get("task_dag", [])
-                    yield {"event": "status", "data": {
-                        "phase": "planning",
-                        "message": f"已规划 {len(task_dag)} 个任务",
-                    }}
-                    yield {"event": "task_dag", "data": {
-                        "tasks": [t.get("task_id") for t in task_dag],
-                        "dependencies": {t["task_id"]: t.get("depends_on", []) for t in task_dag},
-                    }}
-
-                elif node_name == "dag_executor":
-                    task_results = output.get("task_results", {})
-                    completed = sum(1 for r in task_results.values()
-                                   if isinstance(r, dict) and r.get("success"))
-                    yield {"event": "status", "data": {
-                        "phase": "executing",
-                        "message": f"已完成 {completed}/{len(task_results)} 个任务",
-                    }}
 
                 elif node_name in ("search_recommend_agent", "detail_compare_agent"):
                     tool_log = output.get("tool_calls_log", [])

@@ -50,11 +50,6 @@ class AgentState(TypedDict):
     # === Clarification state ===
     pending_clarification: dict | None          # Awaiting clarification answer {fields, question_spec, question_type, strategy, entities_snapshot}
 
-    # === Orchestrator DAG ===
-    task_dag: list                              # Task DAG from orchestrator [{task_id, type, depends_on, args}]
-    task_results: dict                          # DAG execution results keyed by task_id
-    task_status: str                            # DAG execution status: "pending" | "running" | "done" | "failed"
-
     # === Multi-Agent routing ===
     active_agent: str                           # Which specialized agent is active (e.g. "search_recommend_agent")
     response_type: str                          # Frontend rendering hint (e.g. "recommendation_cards")
@@ -63,6 +58,3 @@ class AgentState(TypedDict):
     # === Narrative streaming ===
     selected_product_ids: list                  # Product IDs selected by agent for narrative streaming
     stream_narrative: bool                      # Whether to use narrative streaming for response
-
-    # === Short-circuit flags ===
-    _skip_dag_executor: bool                    # Skip dag_executor, go directly to postprocess
