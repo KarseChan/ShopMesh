@@ -26,8 +26,6 @@ from fastapi.responses import StreamingResponse
 from langgraph.types import Command
 
 from src.graph.hitl_nodes import build_hitl_order_graph
-from src.graph.shopping_agent import run_agent_stream
-from src.graph.shopping_graph import run_shopping_stream
 from src.graph.multi_agent_graph import run_multi_agent_stream
 from src.memory.conversation_store import get_conversations, get_messages
 from src.security.input_guard import InputViolation, validate_input
@@ -92,10 +90,8 @@ async def chat(request: Request):
     """Send a message and receive SSE stream of shopping results.
 
     Request body: {"message": str, "session_id": str?, "mode": str?}
-    mode="multi_agent" (default): Orchestrator DAG — LLM decomposes compound intents into task DAG
-    mode="multi_agent_legacy": Legacy multi-agent — deterministic router + single agent per intent
-    mode="workflow": Original shopping_graph pipeline
-    mode="agent": Hybrid Agent graph
+    默认(不传 mode 或任意值):确定性意图路由 → 每意图一个 ReAct agent(legacy 主路径)。
+    mode="multi_agent_orchestrator":opt-in DAG 编排(复合意图拆解，较慢)。
     """
     body = await request.json()
     message = body.get("message", "")
@@ -116,34 +112,13 @@ async def chat(request: Request):
 
     async def event_stream():
         try:
-            if mode == "workflow":
-                async for event in run_shopping_stream(message, session_id=session_id, user_id=user_id):
-                    etype = event.get("event", "unknown")
-                    data = event.get("data", {})
-                    yield _sse_event(etype, data)
-            elif mode == "multi_agent":
-                # 默认走 legacy(确定性路由 → 单 agent):比 orchestrator DAG 少一轮 LLM 分解，
-                # 延迟约减半，且路径可预测。需要 DAG 编排时前端显式传 mode="multi_agent_orchestrator"。
-                async for event in run_multi_agent_stream(message, user_id=user_id, session_id=session_id, thread_id=f"multi-{session_id}", mode="legacy", is_new_session=is_new_session):
-                    etype = event.get("event", "unknown")
-                    data = event.get("data", {})
-                    yield _sse_event(etype, data)
-            elif mode == "multi_agent_legacy":
-                async for event in run_multi_agent_stream(message, user_id=user_id, session_id=session_id, thread_id=f"multi-{session_id}", mode="legacy", is_new_session=is_new_session):
-                    etype = event.get("event", "unknown")
-                    data = event.get("data", {})
-                    yield _sse_event(etype, data)
-            elif mode == "multi_agent_orchestrator":
-                # Opt-in DAG 编排路径（复合意图拆解）。较慢，默认不用。
-                async for event in run_multi_agent_stream(message, user_id=user_id, session_id=session_id, thread_id=f"multi-{session_id}", mode="orchestrator", is_new_session=is_new_session):
-                    etype = event.get("event", "unknown")
-                    data = event.get("data", {})
-                    yield _sse_event(etype, data)
-            else:
-                async for event in run_agent_stream(message, user_id=user_id, session_id=session_id, thread_id=f"agent-{session_id}"):
-                    etype = event.get("event", "unknown")
-                    data = event.get("data", {})
-                    yield _sse_event(etype, data)
+            # 单一主路径：确定性意图路由 → 每意图一个 ReAct agent(legacy)。
+            # orchestrator DAG（复合意图拆解，较慢）仅在显式 mode="multi_agent_orchestrator" 时启用。
+            exec_mode = "orchestrator" if mode == "multi_agent_orchestrator" else "legacy"
+            async for event in run_multi_agent_stream(message, user_id=user_id, session_id=session_id, thread_id=f"multi-{session_id}", mode=exec_mode, is_new_session=is_new_session):
+                etype = event.get("event", "unknown")
+                data = event.get("data", {})
+                yield _sse_event(etype, data)
         except Exception as e:
             yield _sse_event("error", {"error": str(e), "severity": "high"})
 
