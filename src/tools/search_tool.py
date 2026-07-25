@@ -1,15 +1,26 @@
-"""Product search tool — reads from mock_data.json."""
+"""Product search tool — reads the product catalog.
+
+Uses the same 5k catalog that the vector index is built from
+(data/mock_products_5k.json), so payload filters, product detail, reviews and
+the vector index all share one consistent taxonomy (flat category +
+product_type). Overridable via env PRODUCT_DATA_PATH.
+"""
 
 import json
+import os
 from pathlib import Path
 
-_DATA_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "mock_data.json"
+_DEFAULT_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "mock_products_5k.json"
+_DATA_PATH = Path(os.environ.get("PRODUCT_DATA_PATH", str(_DEFAULT_PATH)))
 
 
 def load_products() -> list[dict]:
     with open(_DATA_PATH, encoding="utf-8") as f:
         data = json.load(f)
-    return data["products"]
+    # Support both a flat list (5k catalog) and the legacy {"products": [...]} wrapper.
+    if isinstance(data, dict):
+        return data.get("products", [])
+    return data
 
 
 def search_products(

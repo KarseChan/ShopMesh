@@ -1,0 +1,93 @@
+# ShopMesh — 本地开发的后端依赖(仅 stateful 服务)。
+#
+# 应用本身(java-api / python-agent / celery)用 uvicorn / mvn 在本地跑;
+# 这里只起 Postgres / Redis / Qdrant / RabbitMQ 四个依赖,端口与 config.yaml
+# 的本地默认值对齐,起来后无需改任何配置即可连上。
+#
+# 用法:
+#   docker compose -f docker-compose.infra.yml up -d      # 启动
+#   docker compose -f docker-compose.infra.yml ps         # 查看
+#   docker compose -f docker-compose.infra.yml down        # 停止(保留数据)
+#   docker compose -f docker-compose.infra.yml down -v     # 停止并删数据卷
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: shop-agent-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-shopping_agent}
+    ports:
+      - "5432:5432"
+    volumes:
+      - shop-agent-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - shop-agent
+
+  redis:
+    image: redis:7-alpine
+    container_name: shop-agent-redis
+    ports:
+      - "16379:6379"   # 对齐 config.yaml redis.url 默认端口
+    volumes:
+      - shop-agent-redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - shop-agent
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.1
+    container_name: shop-agent-qdrant
+    ports:
+      - "16336:6333"   # 对齐 config.yaml vector.url 默认端口
+      - "16334:6334"   # gRPC(可选)
+    volumes:
+      - shop-agent-qdrantdata:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/6333' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - shop-agent
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: shop-agent-rabbitmq
+    ports:
+      - "5672:5672"     # AMQP(Celery broker)
+      - "15672:15672"   # 管理台 http://localhost:15672 (guest/guest)
+    volumes:
+      - shop-agent-rabbitmqdata:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - shop-agent
+
+# 注：Ollama(bge-m3 embedding)改为在宿主机原生安装,监听 localhost:11434,
+# 与 config.yaml embedding.base_url 对齐。故此处不再定义 ollama 容器,避免与
+# 宿主机 Ollama 争抢 11434 端口。
+
+networks:
+  shop-agent:
+    name: shop-agent-net
+    driver: bridge
+
+volumes:
+  shop-agent-pgdata:
+  shop-agent-redisdata:
+  shop-agent-qdrantdata:
+  shop-agent-rabbitmqdata:

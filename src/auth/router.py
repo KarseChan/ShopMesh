@@ -3,7 +3,8 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
+from pydantic.alias_generators import to_camel
 from sqlmodel import Session, select
 
 from src.auth.jwt import (
@@ -20,30 +21,37 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
 # ---------- Schemas ----------
+# Wire format is camelCase (accessToken / refreshToken / userId ...) to match the
+# frontend and the Java control-plane contract; internal attribute names stay
+# snake_case. populate_by_name=True lets constructors use either form.
 
-class RegisterRequest(BaseModel):
+class CamelModel(BaseModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+
+class RegisterRequest(CamelModel):
     username: str
     password: str
     email: str | None = None
     tenant_name: str | None = None  # defaults to username
 
 
-class LoginRequest(BaseModel):
+class LoginRequest(CamelModel):
     username: str
     password: str
 
 
-class RefreshRequest(BaseModel):
+class RefreshRequest(CamelModel):
     refresh_token: str
 
 
-class TokenResponse(BaseModel):
+class TokenResponse(CamelModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
 
 
-class UserInfo(BaseModel):
+class UserInfo(CamelModel):
     user_id: str
     username: str
     tenant_id: str

@@ -43,6 +43,16 @@ from src.observability.logger import get_logger, generate_request_id, set_reques
 
 logger = get_logger("multi_agent")
 
+# P0-3: node-entry progress messages, pushed on `on_chain_start` so the user sees
+# feedback BEFORE the slow work runs (embedding + search + LLM), not after it.
+_PROGRESS_ON_START: dict[str, tuple[str, str]] = {
+    "preprocess": ("understanding", "正在理解您的需求..."),
+    "orchestrator": ("planning", "正在规划任务..."),
+    "dag_executor": ("executing", "正在执行..."),
+    "search_recommend_agent": ("searching", "正在搜索并为您筛选商品..."),
+    "detail_compare_agent": ("comparing", "正在对比商品详情..."),
+}
+
 
 def _friendly_error(e: Exception) -> str:
     """Convert technical error to user-friendly message."""
@@ -198,10 +208,21 @@ async def run_multi_agent_stream(
 
     try:
         results_yielded = False
+        started_nodes: set[str] = set()
         yield {"event": "status", "data": {"phase": "thinking", "message": "正在分析您的需求..."}}
 
         async for event in graph.astream_events(initial_state, config=config, version="v2"):
             kind = event.get("event", "")
+
+            # P0-3: emit a stage status the moment a node STARTS (before its slow work),
+            # deduped so each node announces itself at most once per request.
+            if kind == "on_chain_start":
+                node_name = event.get("name", "")
+                if node_name in _PROGRESS_ON_START and node_name not in started_nodes:
+                    started_nodes.add(node_name)
+                    phase, message = _PROGRESS_ON_START[node_name]
+                    yield {"event": "status", "data": {"phase": phase, "message": message}}
+                continue
 
             if kind == "on_chain_end":
                 node_name = event.get("name", "")
@@ -243,11 +264,6 @@ async def run_multi_agent_stream(
                             "tool": tool_name,
                             "args": latest.get("args", {}),
                         }}
-                        # Show progress to user
-                        if tool_name in ("product_search", "multi_query_search"):
-                            yield {"event": "status", "data": {"phase": "searching", "message": "正在搜索商品..."}}
-                        elif tool_name == "ask_clarification":
-                            yield {"event": "status", "data": {"phase": "clarifying", "message": "需要更多信息..."}}
 
                 elif node_name == "fallback":
                     yield {"event": "fallback", "data": {"used": True}}

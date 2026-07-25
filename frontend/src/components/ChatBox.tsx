@@ -15,7 +15,7 @@ function StreamingCursor() {
 
 export default function ChatBox() {
   const { accessToken, user } = useAuth();
-  const { messages, isLoading, sendMessage, startOrder, resumeOrder, reportBehavior, pendingOrder } = useChatStream({
+  const { messages, isLoading, sendMessage, startOrder, resumeOrder, reportBehavior, pendingOrder, retryLast } = useChatStream({
     accessToken: accessToken || undefined,
     userId: user?.userId,
   });
@@ -52,7 +52,7 @@ export default function ChatBox() {
         )}
 
         {messages.map((msg, i) => (
-          <MessageBubble key={i} message={msg} onOrder={startOrder} onProductClick={reportBehavior} onOptionClick={sendMessage} />
+          <MessageBubble key={i} message={msg} onOrder={startOrder} onProductClick={reportBehavior} onOptionClick={sendMessage} onRetry={retryLast} />
         ))}
 
         {isLoading && (() => {
@@ -175,7 +175,7 @@ function NarrativeRenderer({ message, onOrder, onProductClick }: {
   );
 }
 
-function MessageBubble({ message, onOrder, onProductClick, onOptionClick }: { message: ChatMessage; onOrder?: (product: Product) => void; onProductClick?: (action: string, product: Product) => void; onOptionClick?: (text: string, displayText?: string) => void }) {
+function MessageBubble({ message, onOrder, onProductClick, onOptionClick, onRetry }: { message: ChatMessage; onOrder?: (product: Product) => void; onProductClick?: (action: string, product: Product) => void; onOptionClick?: (text: string, displayText?: string) => void; onRetry?: () => void }) {
   if (message.role === "user") {
     return (
       <div className="flex justify-end">
@@ -285,6 +285,14 @@ function MessageBubble({ message, onOrder, onProductClick, onOptionClick }: { me
               </div>
             )}
           </>
+        )}
+        {message.isError && onRetry && (
+          <button
+            onClick={onRetry}
+            className="flex items-center gap-1.5 px-3 py-1.5 border border-gray-300 text-gray-600 text-sm rounded-lg hover:bg-gray-50 transition-colors"
+          >
+            <span aria-hidden>↻</span> 重试
+          </button>
         )}
       </div>
     </div>

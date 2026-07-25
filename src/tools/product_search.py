@@ -8,11 +8,48 @@ Agent calls this single tool instead of managing low-level retrieval details.
 """
 
 from src.agents.ranker import rank
+from src.agents.scenario_filter import filter_by_scenario
 from src.observability.logger import get_logger
 from src.retrieval.hybrid_retriever import hybrid_search
 from src.tools.schema import ToolDef, tool_registry
 
 logger = get_logger("product_search_tool")
+
+
+def _post_filter(products: list[dict], entities: dict) -> list[dict]:
+    """Hard post-filters applied after ranking (P0-2 regression guards).
+
+    These are safety nets independent of the retrieval-layer Qdrant filter:
+    even if entity extraction or the vector pre-filter misses, over-budget or
+    scenario-inappropriate items never reach the user.
+
+    1. Budget: drop items outside [price_min, price_max] (P0 bug — ¥549 for "500以内").
+    2. Scenario: drop category-inappropriate items (P1 bug — 奶茶 for "送礼物").
+    """
+    price_min = entities.get("price_min")
+    price_max = entities.get("price_max")
+
+    kept = []
+    dropped_budget = []
+    for p in products:
+        price = p.get("price")
+        if price is not None:
+            if price_max is not None and price > float(price_max):
+                dropped_budget.append(p.get("product_id", ""))
+                continue
+            if price_min is not None and price < float(price_min):
+                dropped_budget.append(p.get("product_id", ""))
+                continue
+        kept.append(p)
+
+    if dropped_budget:
+        logger.info("budget_post_filter",
+                    price_min=price_min, price_max=price_max,
+                    dropped=len(dropped_budget), remaining=len(kept))
+
+    # Scenario category whitelist/blacklist (e.g. gift → exclude 奶茶/食品/家居)
+    kept = filter_by_scenario(kept, entities)
+    return kept
 
 
 async def product_search(
@@ -49,6 +86,9 @@ async def product_search(
     # Step 3: Multi-objective ranking (with optional cross-encoder reranker)
     ranked = await rank(products, search_scores=search_scores, entities=entities,
                         memory_signals=memory_signals, original_query=semantic_query)
+
+    # Step 3.5: Hard post-filters (budget + scenario) — P0-2 safety nets
+    ranked = _post_filter(ranked, entities)
 
     # Step 4: Cap results to save LLM tokens
     ranked = ranked[:max_results]

@@ -62,6 +62,7 @@ async def build_index(data_path: str, collection: str, batch_size: int = 32):
                 "features": p.get("features", []),
                 "rating": p.get("rating", 0),
                 "delivery_minutes": p.get("delivery_minutes", 0),
+                "image_url": p.get("image_url", ""),
             }
             for p in batch
         ]

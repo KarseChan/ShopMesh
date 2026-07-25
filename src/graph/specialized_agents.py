@@ -55,6 +55,7 @@ class RecoveryState:
         self.recovery_count = 0
         self.consecutive_529 = 0
         self.has_attempted_reactive_compact = False
+        self.has_attempted_hard_truncate = False
         self.current_model: str | None = None  # None = use default
 
 
@@ -100,6 +101,22 @@ async def _reactive_compact(messages: list[dict]) -> list[dict]:
             {"role": "user",
              "content": "[上下文压缩] 之前的对话已精简，请从当前状态继续。"},
             *tail]
+
+
+def _hard_truncate(messages: list[dict]) -> list[dict]:
+    """Last-resort truncation — keep only the system prompt + the latest user turn.
+
+    Used when even reactive_compact still overflows the context window. A single
+    user turn is almost never too long, so this lets the agent CONTINUE and answer
+    instead of dead-ending and forcing the user to restart the whole conversation.
+    """
+    logger.warning("hard_truncate_triggered", original_count=len(messages))
+    system = messages[0] if messages else {"role": "system", "content": ""}
+    last_user = next((m for m in reversed(messages) if m.get("role") == "user"), None)
+    truncated = [system]
+    if last_user:
+        truncated.append(last_user)
+    return truncated
 
 
 # ──────────────────────────────────────────────
@@ -401,16 +418,27 @@ async def _run_agent_loop(state: dict, agent_name: str) -> dict:
             await trigger_hooks("post_llm_call", agent=agent_name, response=response)
 
         except Exception as e:
-            # Path 2: prompt_too_long → reactive compact (once)
+            # Path 2: prompt_too_long → progressively shrink context and CONTINUE.
+            # Never dead-end the user by asking them to restart the whole conversation.
             if _is_prompt_too_long_error(e):
                 if not recovery.has_attempted_reactive_compact:
+                    # Step 1: keep system + last 5 messages
                     messages[:] = await _reactive_compact(messages)
                     recovery.has_attempted_reactive_compact = True
                     logger.warning("reactive_compact_retry", agent=agent_name)
                     continue
+                if not recovery.has_attempted_hard_truncate:
+                    # Step 2: keep only system + latest user turn (almost always fits)
+                    messages[:] = _hard_truncate(messages)
+                    recovery.has_attempted_hard_truncate = True
+                    logger.warning("hard_truncate_retry", agent=agent_name)
+                    continue
+                # Step 3: even a single turn overflows — give a graceful, honest answer
+                # that keeps the conversation alive rather than forcing a restart.
                 logger.error("prompt_too_long_unrecoverable", agent=agent_name)
                 return {
-                    "final_response": "抱歉，对话上下文过长，请重新开始对话。",
+                    "final_response": "您这条消息的内容有点长，我这边处理不过来了 😅 "
+                                      "可以拆成几条简短一点的需求发给我吗？之前的对话我还记得，不用重来。",
                     "iteration": state.get("iteration", 0) + 1,
                 }
 

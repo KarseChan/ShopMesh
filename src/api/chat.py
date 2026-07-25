@@ -122,12 +122,20 @@ async def chat(request: Request):
                     data = event.get("data", {})
                     yield _sse_event(etype, data)
             elif mode == "multi_agent":
-                async for event in run_multi_agent_stream(message, user_id=user_id, session_id=session_id, thread_id=f"multi-{session_id}", mode="orchestrator", is_new_session=is_new_session):
+                # 默认走 legacy(确定性路由 → 单 agent):比 orchestrator DAG 少一轮 LLM 分解，
+                # 延迟约减半，且路径可预测。需要 DAG 编排时前端显式传 mode="multi_agent_orchestrator"。
+                async for event in run_multi_agent_stream(message, user_id=user_id, session_id=session_id, thread_id=f"multi-{session_id}", mode="legacy", is_new_session=is_new_session):
                     etype = event.get("event", "unknown")
                     data = event.get("data", {})
                     yield _sse_event(etype, data)
             elif mode == "multi_agent_legacy":
                 async for event in run_multi_agent_stream(message, user_id=user_id, session_id=session_id, thread_id=f"multi-{session_id}", mode="legacy", is_new_session=is_new_session):
+                    etype = event.get("event", "unknown")
+                    data = event.get("data", {})
+                    yield _sse_event(etype, data)
+            elif mode == "multi_agent_orchestrator":
+                # Opt-in DAG 编排路径（复合意图拆解）。较慢，默认不用。
+                async for event in run_multi_agent_stream(message, user_id=user_id, session_id=session_id, thread_id=f"multi-{session_id}", mode="orchestrator", is_new_session=is_new_session):
                     etype = event.get("event", "unknown")
                     data = event.get("data", {})
                     yield _sse_event(etype, data)

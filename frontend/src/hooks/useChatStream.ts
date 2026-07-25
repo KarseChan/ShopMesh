@@ -30,6 +30,7 @@ export interface ChatMessage {
   responseData?: Record<string, unknown>;
   isLoading?: boolean;
   isStreaming?: boolean;
+  isError?: boolean;
   // Narrative streaming fields
   narrativeProducts?: Product[];
   visibleProductIds?: string[];
@@ -70,6 +71,7 @@ export interface UseChatStreamReturn {
   reportBehavior: (action: string, product: Product) => void;
   pendingOrder: Record<string, unknown> | null;
   newConversation: () => void;
+  retryLast: () => void;
 }
 
 const API_BASE = "";
@@ -115,6 +117,8 @@ export function useChatStream(opts?: { sessionId?: string; accessToken?: string;
   }, [opts?.accessToken]);
   // Track if the session was just renewed by /api/session/ensure
   const isNewSessionRef = useRef(false);
+  // Last message sent, so a failed turn can be retried verbatim.
+  const lastSentRef = useRef<{ text: string; displayText?: string } | null>(null);
 
   // Ensure session validity, then load conversation history on mount
   useEffect(() => {
@@ -161,6 +165,9 @@ export function useChatStream(opts?: { sessionId?: string; accessToken?: string;
 
   const sendMessage = useCallback(async (text: string, displayText?: string) => {
     if (!text.trim() || isLoading) return;
+
+    // Remember for retry
+    lastSentRef.current = { text, displayText };
 
     // Add user message (show displayText if provided, otherwise raw text)
     const userMsg: ChatMessage = { role: "user", content: displayText || text };
@@ -343,6 +350,8 @@ export function useChatStream(opts?: { sessionId?: string; accessToken?: string;
             ...last,
             content: errorMsg,
             isLoading: false,
+            isStreaming: false,
+            isError: true,
           };
         }
         return updated;
@@ -351,6 +360,20 @@ export function useChatStream(opts?: { sessionId?: string; accessToken?: string;
       setIsLoading(false);
     }
   }, [isLoading]);
+
+  // Retry the last message: drop the failed user+assistant pair, resend verbatim.
+  const retryLast = useCallback(() => {
+    const last = lastSentRef.current;
+    if (!last || isLoading) return;
+    setMessages((prev) => {
+      const trimmed = [...prev];
+      // Remove trailing errored assistant message and its user message
+      if (trimmed.length && trimmed[trimmed.length - 1].role === "assistant") trimmed.pop();
+      if (trimmed.length && trimmed[trimmed.length - 1].role === "user") trimmed.pop();
+      return trimmed;
+    });
+    void sendMessage(last.text, last.displayText);
+  }, [isLoading, sendMessage]);
 
   const startOrder = useCallback(async (product: Product) => {
     setIsLoading(true);
@@ -497,7 +520,7 @@ export function useChatStream(opts?: { sessionId?: string; accessToken?: string;
     }).catch(() => {}); // silently ignore failures
   }, []);
 
-  return { messages, isLoading, sendMessage, startOrder, resumeOrder, reportBehavior, pendingOrder, newConversation };
+  return { messages, isLoading, sendMessage, startOrder, resumeOrder, reportBehavior, pendingOrder, newConversation, retryLast };
 }
 
 interface NarrativeCallbacks {

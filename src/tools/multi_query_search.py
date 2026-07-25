@@ -95,6 +95,10 @@ async def multi_query_search(
     ranked = await rank(all_products, search_scores=all_scores, entities=entities,
                         memory_signals=memory_signals, original_query=original_query)
 
+    # Hard post-filters (budget + scenario) — P0-2 safety nets
+    from src.tools.product_search import _post_filter
+    ranked = _post_filter(ranked, entities)
+
     # Cap results to save LLM tokens
     ranked = ranked[:max_results]
 

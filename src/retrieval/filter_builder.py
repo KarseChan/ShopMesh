@@ -90,6 +90,18 @@ def _get_all_categories() -> list[str]:
     return _CATEGORIES_CACHE
 
 
+_PRODUCT_TYPES_CACHE: set[str] | None = None
+
+
+def _get_all_product_types() -> set[str]:
+    """All product_type values present in the catalog (flat schema)."""
+    global _PRODUCT_TYPES_CACHE
+    if _PRODUCT_TYPES_CACHE is None:
+        products = load_products()
+        _PRODUCT_TYPES_CACHE = {p["product_type"] for p in products if p.get("product_type")}
+    return _PRODUCT_TYPES_CACHE
+
+
 def _get_product_type_to_categories() -> dict[str, list[str]]:
     """Auto-discover product_type → categories mapping from database.
 
@@ -286,21 +298,22 @@ async def build_filter(entities: dict) -> Filter | None:
     """
     conditions = []
 
-    # Category filter: expand broad categories + product_type to actual categories
-    # e.g., ("服饰", "衬衫") → MatchAny(["男装/上装/T恤衬衫", "女装/上装/衬衫外套"])
+    # Flat schema (data/mock_products_5k.json): `category` and `product_type` are
+    # separate payload fields. Hard-filter only on values that actually exist in
+    # the catalog — an unknown/near-miss value (e.g. "跑鞋" vs "跑步鞋") is left to
+    # vector search instead of producing a category filter that matches nothing.
     category = entities.get("category")
     product_type = entities.get("product_type")
-    gender = entities.get("gender")
-    if category or product_type:
-        expanded = await _expand_category(category, product_type, gender)
-        if len(expanded) > 1:
-            conditions.append(FieldCondition(
-                key="category", match=MatchAny(any=expanded)
-            ))
-        elif expanded:
-            conditions.append(FieldCondition(
-                key="category", match=MatchValue(value=expanded[0])
-            ))
+
+    if product_type and product_type in _get_all_product_types():
+        conditions.append(FieldCondition(
+            key="product_type", match=MatchValue(value=product_type)
+        ))
+
+    if category and category in set(_get_all_categories()):
+        conditions.append(FieldCondition(
+            key="category", match=MatchValue(value=category)
+        ))
 
     # Brand filter (exact match on brand field)
     brand = entities.get("brand")

@@ -2,15 +2,15 @@
 llm:
   default:
     provider: openai_compatible
-    model: deepseek-v4-flash
-    base_url: https://api.deepseek.com/v1
+    model: ${LLM_MODEL:-deepseek-v4-flash}
+    base_url: ${LLM_BASE_URL:-https://api.deepseek.com/v1}
     api_key: ${LLM_API_KEY}
     temperature: 0.1
     max_tokens: 2048
   orchestrator:
     provider: openai_compatible
-    model: deepseek-v4-flash
-    base_url: https://api.deepseek.com/v1
+    model: ${LLM_MODEL:-deepseek-v4-flash}
+    base_url: ${LLM_BASE_URL:-https://api.deepseek.com/v1}
     api_key: ${LLM_API_KEY}
     temperature: 0.0
     max_tokens: 1024
@@ -20,14 +20,14 @@ embedding:
   default:
     provider: ollama
     model: bge-m3
-    base_url: http://localhost:11434
+    base_url: ${OLLAMA_BASE_URL:-http://127.0.0.1:11434}   # 用 127.0.0.1 而非 localhost：Windows 上 localhost 解析到 IPv6 ::1，Ollama 只绑 IPv4
     dimensions: 1024
 
 # Reranker (cross-encoder semantic reranking)
 reranker:
   provider: flag_embedding
   model: BAAI/bge-reranker-v2-m3
-  enabled: true
+  enabled: false   # 关闭：FlagEmbedding 未安装，开启只会每次查询失败重试白等 ~3s 且 fallback 到中性分（对排序无影响）。装好 FlagEmbedding + 下载模型后可重新开启
   trigger:
     min_soft_requirements: 2
     score_gap_threshold: 0.1

@@ -1702,3 +1702,29 @@ count = await build_intent_index()  # 77 samples (原 75)
 - Qdrant `intent_samples` collection — 重建索引（77 samples）
 
 **状态**: 已修复
+
+---
+
+## P0-2 复盘：三个核心 bug 在 multi_agent 主路径的落地（2026-07-22）
+
+**背景**：此前 P0/P1/P2 的修复大多只落在 legacy `shopping_graph.py`（node_rank 后过滤 + scenario_filter 接入）。但当前默认路径是 **multi_agent（product_search / multi_query_search 工具 → hybrid_search → rank）**，该路径存在缺口：
+
+- **P0 预算**：`build_filter` 有 price Range，检索层能过滤；但排序后**无兜底后过滤**——实体没抽到 price_max 或过滤未生效时，超预算商品直接泄漏。
+- **P1 场景**：`product_search` 根本没调 `filter_by_scenario`，rank 只做软加权 boost，不会硬排除奶茶/饮品 → 送礼仍可能推蜜雪冰城。
+- **P2 品类**：`build_filter` 已生成品类条件，OK。
+
+**修复**：新增 `_post_filter(products, entities)`（`src/tools/product_search.py`），排序后、截断前施加两道硬过滤：
+1. 预算：剔除 `price > price_max` 或 `price < price_min` 的商品（兜底，独立于检索层过滤）。
+2. 场景：复用 `filter_by_scenario` 按品类白/黑名单剔除（如礼物 → 排除奶茶/食品/家居）。
+
+`product_search` 和 `multi_query_search` 两个工具均已接入。
+
+**回归测试**：`tests/test_p02_core_filters.py`（15 条，确定性、不依赖 LLM/Qdrant/Ollama）：
+- 预算：`price_max=500` 剔除 ¥549、保留边界 ¥500、支持 price_min、双边界
+- 场景：生日礼物排除奶茶/食品/家居、保留护肤/数码、无场景透传
+- 组合：场景 + 预算同时施加
+- build_filter：品类条件存在、price Range(lte/gte) 正确、空实体返回 None
+
+**状态**: 已修复
+
+**遗留（非本次范围）**：`tests/test_tools.py` 有 4 个既有失败（`test_all_six_tools_registered` 硬编码期望 6 工具但实际 7 个含 multi_query_search;ask_clarification / constraint_relaxation 行为漂移），与 P0-2 无关,建议单独处理。
