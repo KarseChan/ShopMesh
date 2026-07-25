@@ -11,7 +11,7 @@ import random
 
 from src.models.embedder import get_embedder
 from src.observability.logger import get_logger
-from src.retrieval.filter_builder import build_filter, _expand_category
+from src.retrieval.filter_builder import build_filter
 from src.retrieval.vector_store import get_vector_store
 from src.config import config
 
@@ -70,13 +70,14 @@ async def hybrid_search(
     gender = entities.get("gender")
     price_min = entities.get("price_min")
     price_max = entities.get("price_max")
-    normalized_categories = await _expand_category(category, product_type, gender) if (category or product_type) else []
+    # NOTE: 不再为日志调用 _expand_category —— 那会每次查询做无谓的品类扩展(甚至触发 embedder)。
+    # build_filter 已直接用扁平 category/product_type 字段过滤,这里只记录原始实体即可。
     logger.info("filter_built",
                 simple_filters=simple_filters,
                 has_complex_filter=qdrant_filter is not None,
+                category=category,
                 product_type=product_type,
                 gender=gender,
-                normalized_categories=normalized_categories,
                 product_type_filter_applied=product_type is not None,
                 price_min=price_min,
                 price_max=price_max,
