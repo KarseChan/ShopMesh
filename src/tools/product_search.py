@@ -132,6 +132,7 @@ def _slim_product(p: dict) -> dict:
         "rating": p.get("rating"),
         "rank_score": p.get("rank_score"),
         "rank_reason_text": p.get("rank_reason_text", ""),
+        "image_url": p.get("image_url", ""),  # 前端 ProductCard 展示用(对 LLM 无意义但成本可忽略)
     }
 
 

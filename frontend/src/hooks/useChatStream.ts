@@ -51,6 +51,7 @@ export interface Product {
   image_url?: string;
   rank_score?: number;
   rank_reasons?: Record<string, number>;
+  rank_reason_text?: string;
   promo_desc?: string;
   suggest_message?: string;
   is_abnormal?: boolean;

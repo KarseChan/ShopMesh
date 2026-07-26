@@ -78,6 +78,30 @@ def _get_final_response(state: dict) -> str:
     return state.get("final_response", "")
 
 
+def _readable_for_history(response: str, state: dict) -> str:
+    """会话历史里保存可读文本,而非 recommendation_cards 的原始 JSON 指令。
+
+    推荐类回答的 final_response 是结构化 JSON(response_type/selected_product_ids),
+    直接存下来会导致刷新后历史里显示一坨 JSON。这里把它转成一句商品摘要。
+    普通文本回答原样返回。
+    """
+    text = (response or "").strip()
+    stripped = text
+    if stripped.startswith("```"):
+        stripped = stripped.split("```", 2)[1] if "```" in stripped[3:] else stripped.lstrip("`")
+        stripped = stripped.removeprefix("json").strip()
+    if stripped.startswith("{") and ("response_type" in stripped or "selected_product_ids" in stripped):
+        products = state.get("search_results") or (state.get("response_data") or {}).get("products") or []
+        if products:
+            names = "、".join(
+                f"{p.get('name', '商品')} ¥{p.get('final_price') or p.get('price', '')}"
+                for p in products[:5]
+            )
+            return f"为你推荐了 {len(products)} 款商品:{names}"
+        return "为你推荐了相关商品"
+    return response
+
+
 def _is_noise(text: str) -> bool:
     """Level 1: obvious filler/operational text, skip entirely."""
     text = text.strip()
@@ -269,7 +293,7 @@ async def node_postprocess(state: dict) -> dict:
 
     # ---- Persistent conversation storage → Celery (with turn_id) ----
     save_conversation_message.delay(user_id, session_id, "user", user_input, current_turn)
-    save_conversation_message.delay(user_id, session_id, "assistant", response, current_turn)
+    save_conversation_message.delay(user_id, session_id, "assistant", _readable_for_history(response, state), current_turn)
 
     # ---- L2b: Trim evicted turns to summary → Celery ----
     from src.auth.context import get_tenant_id

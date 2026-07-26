@@ -21,9 +21,12 @@ def _try_db() -> bool:
     if _db_available is not None:
         return _db_available
     try:
+        from sqlalchemy import text
         from src.db.engine import get_session
         session = get_session()
-        session.exec("SELECT 1")
+        # SQLAlchemy 2.x 要求文本 SQL 用 text(),裸字符串会抛错 —— 之前这里误判
+        # DB 不可用,导致所有会话读写被静默跳过(历史永远存不进/读不到)。
+        session.exec(text("SELECT 1"))
         session.close()
         _db_available = True
     except Exception:
@@ -70,12 +73,12 @@ def get_conversations(user_id: str, limit: int = 20) -> list[dict]:
     try:
         from src.db.engine import get_session
         from src.db.models import ConversationMessage
-        from sqlmodel import col
+        from sqlmodel import col, select
         session = get_session()
 
         # Subquery: get latest message per conversation
         rows = session.exec(
-            ConversationMessage.select()
+            select(ConversationMessage)
             .where(ConversationMessage.user_id == user_id)
             .order_by(col(ConversationMessage.created_at).desc())
             .limit(limit * 10)  # over-fetch, then deduplicate
@@ -112,11 +115,11 @@ def get_messages(user_id: str, conversation_id: str, limit: int = 50) -> list[di
     try:
         from src.db.engine import get_session
         from src.db.models import ConversationMessage
-        from sqlmodel import col
+        from sqlmodel import col, select
         session = get_session()
 
         rows = session.exec(
-            ConversationMessage.select()
+            select(ConversationMessage)
             .where(
                 ConversationMessage.user_id == user_id,
                 ConversationMessage.conversation_id == conversation_id,
@@ -157,11 +160,11 @@ def get_turns_in_range(user_id: str, conversation_id: str,
     try:
         from src.db.engine import get_session
         from src.db.models import ConversationMessage
-        from sqlmodel import col
+        from sqlmodel import col, select
         session = get_session()
 
         rows = session.exec(
-            ConversationMessage.select()
+            select(ConversationMessage)
             .where(
                 ConversationMessage.user_id == user_id,
                 ConversationMessage.conversation_id == conversation_id,

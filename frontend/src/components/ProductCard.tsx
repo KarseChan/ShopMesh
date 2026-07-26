@@ -15,6 +15,17 @@ const PLATFORM_NAMES: Record<string, string> = {
   pdd: "拼多多",
 };
 
+// 自包含占位图(data-URI,不依赖网络)。当 image_url 的图源不可达时兜底,
+// 保证卡片图片位始终有内容,而不是留白或破图。
+const FALLBACK_IMG =
+  "data:image/svg+xml," +
+  encodeURIComponent(
+    "<svg xmlns='http://www.w3.org/2000/svg' width='400' height='300'>" +
+      "<rect width='400' height='300' fill='#eef2f7'/>" +
+      "<text x='200' y='150' font-family='sans-serif' font-size='22' fill='#94a3b8' " +
+      "text-anchor='middle' dominant-baseline='middle'>商品图片</text></svg>"
+  );
+
 export default function ProductCard({ product, rank, onOrder, onProductClick }: ProductCardProps) {
   const displayPrice = product.final_price || product.price;
   const hasDiscount = product.final_price && product.final_price < product.price;
@@ -25,6 +36,21 @@ export default function ProductCard({ product, rank, onOrder, onProductClick }: 
       className="border rounded-xl p-4 bg-white shadow-sm hover:shadow-md transition-shadow cursor-pointer"
       onClick={() => onProductClick?.(product)}
     >
+      {product.image_url && (
+        <div className="mb-3 -mx-4 -mt-4 overflow-hidden rounded-t-xl bg-gray-100 aspect-[4/3]">
+          <img
+            src={product.image_url}
+            alt={product.name}
+            loading="lazy"
+            className="w-full h-full object-cover"
+            onError={(e) => {
+              // 图源不可达 → 换成自包含占位图(避免破图);已是占位图则不再重试
+              if (e.currentTarget.src !== FALLBACK_IMG) e.currentTarget.src = FALLBACK_IMG;
+            }}
+          />
+        </div>
+      )}
+
       <div className="flex items-center gap-2 mb-2">
         {rank && (
           <span className="inline-block bg-blue-100 text-blue-700 text-xs font-semibold px-2 py-1 rounded-full">
@@ -46,6 +72,13 @@ export default function ProductCard({ product, rank, onOrder, onProductClick }: 
           <span className="text-sm text-gray-400 line-through">¥{product.price}</span>
         )}
       </div>
+
+      {product.rank_reason_text && (
+        <p className="text-sm text-gray-600 bg-blue-50/60 rounded px-2 py-1.5 mb-2">
+          <span className="font-medium text-blue-600">推荐理由：</span>
+          {product.rank_reason_text}
+        </p>
+      )}
 
       {product.is_abnormal && (
         <div className="bg-orange-50 border border-orange-200 rounded px-2 py-1.5 mb-2">

@@ -15,6 +15,13 @@ celery_app = Celery(
     "shopmesh",
     broker=_broker_url,
     backend=_result_backend,
+    # 显式导入任务模块,任务才会注册。autodiscover_tasks 默认找 src.tasks.tasks
+    # (不存在),会导致 "Received unregistered task"。
+    include=[
+        "src.tasks.memory_tasks",
+        "src.tasks.cleanup_tasks",
+        "src.tasks.event_tasks",
+    ],
 )
 
 celery_app.conf.update(
@@ -35,11 +42,11 @@ celery_app.conf.update(
     # Result expiry
     result_expires=3600,  # 1 hour
 
-    # Task routes
+    # Task routes — 按任务的显式名(tasks.<domain>.*)匹配,而非模块路径
     task_routes={
-        "src.tasks.memory_tasks.*": {"queue": "memory"},
-        "src.tasks.cleanup_tasks.*": {"queue": "cleanup"},
-        "src.tasks.event_tasks.*": {"queue": "events"},
+        "tasks.memory.*": {"queue": "memory"},
+        "tasks.cleanup.*": {"queue": "cleanup"},
+        "tasks.events.*": {"queue": "events"},
     },
 
     # Default queue
