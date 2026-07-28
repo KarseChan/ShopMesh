@@ -188,13 +188,6 @@ def _build_product_map(search_results: list[dict]) -> dict[str, dict]:
     return product_map
 
 
-_INTRO_SYSTEM_PROMPT = """你是智能导购助手。根据以下商品信息，为用户生成一段简洁的推荐介绍（2-3句话）。
-要求：
-- 自然口语化，像朋友推荐一样
-- 突出这个商品的亮点（价格、品质、适用场景）
-- 结合用户的具体需求和场景
-- 不要输出 JSON，不要输出序号，直接输出介绍文字"""
-
 _SUMMARY_SYSTEM_PROMPT = """你是智能导购助手。根据以下已推荐的商品，为用户生成一段简短的总结（1-2句话）。
 要求：
 - 自然口语化
@@ -203,39 +196,23 @@ _SUMMARY_SYSTEM_PROMPT = """你是智能导购助手。根据以下已推荐的�
 - 不要输出 JSON，直接输出文本"""
 
 
-def _build_product_intro_messages(product: dict, user_query: str, rank: int) -> list[dict]:
-    """Build LLM messages for generating a single product introduction."""
-    name = product.get("name", "未知商品")
-    price = product.get("price", 0)
-    final_price = product.get("final_price", price)
-    brand = product.get("brand", "")
-    category = product.get("category", "")
-    platform = product.get("platform_id", "")
-    promo = product.get("promo_desc", "")
-    features = product.get("features", "")
+def _compose_product_intro(product: dict, rank: int) -> str:
+    """确定性组装单个商品的推荐文案 —— 用排序器已算好的 rank_reason_text,不调 LLM。
 
-    parts = [f"商品: {name}"]
-    if brand:
-        parts.append(f"品牌: {brand}")
-    if platform:
-        parts.append(f"平台: {platform}")
-    if final_price and final_price != price:
-        parts.append(f"价格: ¥{price} → ¥{final_price}")
-    else:
-        parts.append(f"价格: ¥{price}")
-    if category:
-        parts.append(f"品类: {category}")
-    if promo:
-        parts.append(f"促销: {promo}")
-    if features:
-        parts.append(f"特点: {features}")
+    前端 ProductCard 会再展示 名称/价格/理由/促销 结构化字段,这里只需给一句
+    可读的引导文案(带序号),与卡片信息一致即可。
+    """
+    name = product.get("name", "这款商品")
+    price = product.get("final_price") or product.get("price", 0)
+    reason = (product.get("rank_reason_text") or "").strip()
+    promo = (product.get("promo_desc") or "").strip()
 
-    product_info = " | ".join(parts)
-
-    return [
-        {"role": "system", "content": _INTRO_SYSTEM_PROMPT},
-        {"role": "user", "content": f"用户需求: {user_query}\n\n这是第 {rank} 个推荐商品:\n{product_info}\n\n请生成推荐介绍："},
-    ]
+    line = f"{rank}. {name} ¥{price}"
+    if reason:
+        line += f" — {reason}"
+    elif promo:
+        line += f" — {promo}"
+    return line + "\n"
 
 
 def _build_summary_messages(products: list[dict], user_query: str) -> list[dict]:
@@ -326,7 +303,8 @@ async def stream_narrative(
     # 1. Preload all product data (frontend caches, doesn't display yet)
     yield _sse("card_preload", {"products": products})
 
-    # 2. Stream each product introduction via LLM
+    # 2. 逐商品文案:用排序器已算好的 rank_reason_text 确定性组装,不再逐个调 LLM
+    #    (原来每个商品一次流式 LLM,3 个商品 ~45s;现在 0 延迟、0 token)
     all_intro_text = ""
     for i, product in enumerate(products):
         pid = product.get("product_id", "")
@@ -334,24 +312,12 @@ async def stream_narrative(
 
         yield _sse("product_intro_start", {"product_id": pid, "index": i})
 
-        # Generate introduction via streaming LLM call (with non-streaming fallback)
-        intro_text = ""
-        messages = _build_product_intro_messages(product, user_query, rank)
-        async for token in _stream_or_fallback(llm, messages, f"intro_{pid}"):
-            intro_text += token
-            yield _sse("text_delta", {"delta": token})
-
-        if not intro_text:
-            intro_text = f"推荐 {product.get('name', '这款商品')}，价格 ¥{product.get('final_price', product.get('price', 0))}。"
-            yield _sse("text_delta", {"delta": intro_text})
+        intro_text = _compose_product_intro(product, rank)
+        yield _sse("text_delta", {"delta": intro_text})
 
         all_intro_text += intro_text
         yield _sse("product_card", {"product_id": pid})
         yield _sse("product_intro_done", {"product_id": pid})
-
-        # Brief pause between products for natural pacing
-        if i < len(products) - 1:
-            await asyncio.sleep(0.3)
 
     # 3. Stream summary via LLM
     summary_text = ""
