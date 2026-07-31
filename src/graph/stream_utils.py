@@ -188,14 +188,6 @@ def _build_product_map(search_results: list[dict]) -> dict[str, dict]:
     return product_map
 
 
-_SUMMARY_SYSTEM_PROMPT = """你是智能导购助手。根据以下已推荐的商品，为用户生成一段简短的总结（1-2句话）。
-要求：
-- 自然口语化
-- 概括推荐的核心理由或给出选购建议
-- 不要重复每个商品的详细介绍
-- 不要输出 JSON，直接输出文本"""
-
-
 def _compose_product_intro(product: dict, rank: int) -> str:
     """确定性组装单个商品的推荐文案 —— 用排序器已算好的 rank_reason_text,不调 LLM。
 
@@ -215,46 +207,18 @@ def _compose_product_intro(product: dict, rank: int) -> str:
     return line + "\n"
 
 
-def _build_summary_messages(products: list[dict], user_query: str) -> list[dict]:
-    """Build LLM messages for generating the final summary."""
-    lines = []
-    for i, p in enumerate(products, 1):
-        name = p.get("name", "未知商品")
-        price = p.get("final_price", p.get("price", 0))
-        lines.append(f"{i}. {name} (¥{price})")
-
-    product_list = "\n".join(lines)
-
-    return [
-        {"role": "system", "content": _SUMMARY_SYSTEM_PROMPT},
-        {"role": "user", "content": f"用户需求: {user_query}\n\n已推荐的商品:\n{product_list}\n\n请生成总结："},
-    ]
-
-
-async def _stream_or_fallback(llm, messages: list[dict], label: str) -> AsyncGenerator[str, None]:
-    """Try streaming LLM call, fall back to non-streaming if it fails.
-
-    Yields content tokens. On streaming failure, calls llm.chat() (non-streaming)
-    and yields the full text at once — better than showing nothing.
-    """
-    try:
-        token_count = 0
-        async for token in llm.chat_stream(messages):
-            token_count += 1
-            if token_count == 1:
-                logger.info("stream_first_token", label=label)
-            yield token
-        logger.info("stream_complete", label=label, tokens=token_count)
-    except Exception as e:
-        logger.warning("stream_fallback", label=label, error_type=type(e).__name__, error=str(e))
-        try:
-            response = await llm.chat(messages)
-            content = response.get("content", "")
-            if content:
-                logger.info("stream_fallback_text", label=label, text_len=len(content))
-                yield content
-        except Exception as e2:
-            logger.error("stream_fallback_failed", label=label, error=str(e2))
+def _compose_summary(products: list[dict]) -> str:
+    """确定性收尾总结 —— 不调 LLM。给出数量 + 价格区间 + 一句挑选建议。"""
+    if not products:
+        return ""
+    n = len(products)
+    prices = [p.get("final_price") or p.get("price") for p in products]
+    prices = [p for p in prices if p]
+    if prices:
+        lo, hi = min(prices), max(prices)
+        rng = f"价格 ¥{lo:g}" if lo == hi else f"价格 ¥{lo:g}~¥{hi:g}"
+        return f"以上为你精选的 {n} 款，{rng}。可结合尺码、品牌偏好和使用场景挑选最合适的一款～"
+    return f"以上为你精选的 {n} 款商品，可结合自己的偏好挑选～"
 
 
 def _sse(event: str, data: dict) -> dict:
@@ -283,7 +247,6 @@ async def stream_narrative(
         agent_summary: Fallback summary from agent (used if LLM summary fails)
     """
     product_map = _build_product_map(search_results)
-    llm = get_llm("react_agent")
 
     # Build ordered product list from selected IDs
     products = []
@@ -319,18 +282,11 @@ async def stream_narrative(
         yield _sse("product_card", {"product_id": pid})
         yield _sse("product_intro_done", {"product_id": pid})
 
-    # 3. Stream summary via LLM
-    summary_text = ""
+    # 3. 收尾总结:确定性模板(不再调 LLM,省一次 ~5-14s 的慢模型调用)
     yield _sse("summary_start", {})
-    messages = _build_summary_messages(products, user_query)
-    async for token in _stream_or_fallback(llm, messages, "summary"):
-        summary_text += token
-        yield _sse("summary_delta", {"delta": token})
-
-    if not summary_text:
-        summary_text = agent_summary or ""
-        if summary_text:
-            yield _sse("summary_delta", {"delta": summary_text})
+    summary_text = agent_summary.strip() if agent_summary else _compose_summary(products)
+    if summary_text:
+        yield _sse("summary_delta", {"delta": summary_text})
 
     # 4. Compat event (full text for clients that don't support narrative)
     full_text = all_intro_text + ("\n\n" + summary_text if summary_text else "")
