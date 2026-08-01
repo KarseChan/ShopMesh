@@ -67,7 +67,7 @@ agents:
   search_recommend_agent:
     max_iterations: 5
     response_type: recommendation_cards
-    tools: [product_search, multi_query_search, ask_clarification, constraint_relaxation, review_summary, add_to_cart, view_cart, update_cart, remove_from_cart]
+    tools: [product_search, multi_query_search, ask_clarification, constraint_relaxation, add_to_cart, view_cart, update_cart, remove_from_cart]
   detail_compare_agent:
     max_iterations: 6
     response_type: comparison_table

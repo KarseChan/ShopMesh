@@ -562,6 +562,21 @@ async def _run_agent_loop(state: dict, agent_name: str) -> dict:
         logger.info("agent_action", agent=agent_name, tool=tool_name,
                      iteration=state.get("iteration", 0))
 
+        # P-2: 去重守卫 —— 同一 (tool, args) 已调用过则不重复执行,直接推动收尾。
+        # 推理模型有时无视 prompt 里的"勿重复"约束,连着调同一工具浪费 ~12s/次。
+        _prior = state.get("tool_calls_log", [])
+        if any(e.get("tool") == tool_name and e.get("args") == tool_args for e in _prior):
+            logger.info("duplicate_tool_call_skipped", agent=agent_name, tool=tool_name,
+                        iteration=state.get("iteration", 0))
+            return {
+                "tool_calls_log": [{
+                    "tool": tool_name, "args": tool_args,
+                    "result": {"success": True, "data": {
+                        "note": "该工具已用相同参数调用过,请直接基于已有结果输出最终推荐,不要再调用工具。"}},
+                }],
+                "iteration": state.get("iteration", 0) + 1,
+            }
+
         # Defensive: inject preprocessed entity fields
         if tool_name == "product_search" and "entities" in tool_args:
             _inject_entity_fields(tool_args["entities"], state.get("entities", {}))
