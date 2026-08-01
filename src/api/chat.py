@@ -260,6 +260,58 @@ async def list_messages(conversation_id: str, user_id: str, limit: int = 50):
     return {"messages": messages}
 
 
+# ── 购物:结算预览 → 确认下单 → 订单查询(购物功能 P2)──
+# 人工闸门:下单必须显式 confirmed=true(SENSITIVE),对应设计里的 HITL 确认。
+
+@app.post("/api/orders/preview")
+async def order_preview(request: Request):
+    """结算预览:从购物车按服务端实时价重算,检查库存。不落库、不扣减。"""
+    from src.auth.context import get_context_user_id
+    from src.skills import cart_store, order_service
+    body = await request.json()
+    user_id = get_context_user_id() or body.get("user_id", "")
+    if not user_id:
+        return {"ok": False, "message": "请先登录"}
+    cart = await cart_store.get_cart(user_id)
+    if not cart["items"]:
+        return {"ok": False, "message": "购物车为空"}
+    lines, total = [], 0.0
+    for ci in cart["items"]:
+        pid = ci["product_id"]
+        stock = await order_service.get_stock(pid)
+        price = ci["price"]
+        qty = int(ci["qty"])
+        total += price * qty
+        lines.append({"product_id": pid, "name": ci.get("name"), "price": price,
+                      "qty": qty, "in_stock": stock >= qty})
+    return {"ok": True, "items": lines, "total_price": round(total, 2),
+            "all_in_stock": all(x["in_stock"] for x in lines)}
+
+
+@app.post("/api/orders")
+async def create_order_endpoint(request: Request):
+    """确认下单(须 confirmed=true)。确定性提交:重算价 + 原子库存 + 幂等 + 落库。"""
+    from src.auth.context import get_context_user_id
+    from src.skills import order_service
+    body = await request.json()
+    if not body.get("confirmed"):
+        return {"ok": False, "message": "订单需用户确认（confirmed=true）"}  # 人工闸门
+    user_id = get_context_user_id() or body.get("user_id", "")
+    session_id = body.get("session_id", user_id)
+    if not user_id:
+        return {"ok": False, "message": "请先登录"}
+    idem = body.get("idempotency_key")
+    return await order_service.create_order_from_cart(user_id, session_id, idempotency_key=idem)
+
+
+@app.get("/api/orders/{order_id}")
+async def get_order_endpoint(order_id: str):
+    """查询订单状态。"""
+    from src.skills import order_service
+    o = await order_service.get_order(order_id)
+    return o or {"ok": False, "message": "订单不存在"}
+
+
 @app.get("/api/tasks/{task_id}")
 async def get_task_status(task_id: str):
     """Query Celery task status.

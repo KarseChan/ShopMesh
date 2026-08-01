@@ -76,10 +76,15 @@ class Order(SQLModel, table=True):
     order_id: str = Field(index=True, unique=True)
     session_id: str = Field(index=True)
     user_id: str = Field(index=True)
-    product_id: str
+    product_id: str = ""          # 兼容旧单品字段(购物车多商品见 items_json)
     quantity: int = 1
-    total_price: float
-    status: str = "pending"  # pending / confirmed / cancelled
+    total_price: float = 0.0
+    # 购物车多商品明细 JSON: [{product_id, name, price, qty}]
+    items_json: str = ""
+    # 幂等键(同键重复下单返回同一订单),防网络重试重复扣款
+    idempotency_key: Optional[str] = Field(default=None, index=True)
+    # 状态机: created → awaiting_payment → paid → shipped → completed / cancelled / refunded
+    status: str = "created"
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
