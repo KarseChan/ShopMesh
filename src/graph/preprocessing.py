@@ -51,45 +51,17 @@ async def _run_normal_preprocessing(user_input: str, user_id: str, state: dict) 
     """
     from src.router import semantic_router
     from src.agents.entity_extractor import extract_entities_and_intent
+    from src.agents.rule_extractor import rule_extract
 
     threshold = config.get("router", {}).get("semantic_threshold", 0.80)
-
-    # Fast path: semantic router + fast category detection (parallel, no LLM)
-    sem_result, cat_result = await asyncio.gather(
-        semantic_router.classify(user_input),
-        detect_category(user_input),
-    )
-    sem_intent, sem_confidence = sem_result
-    detected_category, detected_confidence = cat_result
-
-    if sem_intent and sem_confidence >= threshold:
-        logger.info("intent_resolved",
-                     user_goals=sem_intent.get("user_goals", []),
-                     task_type=sem_intent.get("task_type"),
-                     confidence=sem_confidence, source="semantic")
-
-    # Memory recall (needs prev_category for trigger check)
-    prev_category = state.get("entities", {}).get("category")
-    do_recall, recall_reason = await should_recall_dual(
-        user_input, user_id,
-        current_category=None, prev_category=prev_category,
-    )
-    if do_recall:
-        memory_task = recall(user_id, user_input)
-        logger.info("recall_triggered", reason=recall_reason)
-    else:
-        memory_task = _empty_list()
-
-    # Load L2a/L2b from Redis + L3 profile (parallel)
+    prev_entities = state.get("entities", {})
     session_id = state.get("session_id", user_id)
     session_mem = get_session_memory(session_id)
-    window_task = session_mem.get_window()
-    summary_task = session_mem.get_summary()
-    profile_task = asyncio.to_thread(get_global_profile, user_id)
 
-    memories, window, summary, user_profile = await asyncio.gather(
-        memory_task, window_task, summary_task, profile_task,
-    )
+    # detect_category 是关键词快分类(无 embedding);会话窗口来自 Redis(快)。
+    # 两者都不含慢的 bge-m3 embedding,先跑,用于规则快路径判定。
+    detected_category, detected_confidence = await detect_category(user_input)
+    window = await session_mem.get_window()
 
     # Redis window recovery: if empty (TTL expired), fall back to PostgreSQL
     if not window:
@@ -104,27 +76,67 @@ async def _run_normal_preprocessing(user_input: str, user_id: str, state: dict) 
             logger.info("window_recovered", session_id=session_id,
                          message_count=len(pg_messages))
 
-    # Build context hint for entity extraction
-    prev_entities = state.get("entities", {})
-    context_hint = build_context_hint(
-        current_query=user_input,
-        prev_entities=prev_entities,
-        detected_category=detected_category,
-        detected_confidence=detected_confidence,
-        session_window=window,
-        memory_chunks=memories if isinstance(memories, list) else None,
-    )
-    if context_hint:
-        logger.info("context_hint_injected", hint_length=len(context_hint))
+    # 会话摘要 + 用户画像(Redis / Postgres,快,两个分支都要)
+    summary_task = session_mem.get_summary()
+    profile_task = asyncio.to_thread(get_global_profile, user_id)
 
-    # Entity extraction with context hint (LLM decides field handling)
-    if sem_intent and sem_confidence >= threshold:
-        entities = await extract_entities(user_input, context_hint=context_hint)
-        intent, confidence, source = sem_intent, sem_confidence, "semantic"
+    # ── P-4 规则快路径 ──
+    # 首轮 + 无窗口 + 可规则化的简单 query:跳过 semantic_router 与记忆召回
+    # (这两步各含一次 ~9s 的 bge-m3 CPU embedding),以及实体抽取 LLM。
+    rule_entities = None
+    if not prev_entities and not window:
+        rule_entities = rule_extract(user_input, detected_category, detected_confidence)
+
+    if rule_entities is not None:
+        entities = rule_entities
+        intent = {"user_goals": ["recommend_product"], "task_type": "product_search",
+                  "execution_hint": "direct_search"}
+        confidence, source = 0.85, "rule"
+        memories = []
+        summary, user_profile = await asyncio.gather(summary_task, profile_task)
+        logger.info("entity_rule_fastpath", category=entities.get("category"),
+                    product_type=entities.get("product_type"))
     else:
-        entities, intent, confidence, source = await extract_entities_and_intent(
-            user_input, context_hint=context_hint,
+        # ── 完整路径:语义路由(intent)+ 记忆召回(均含 embedding)+ 实体抽取 LLM ──
+        sem_intent, sem_confidence = await semantic_router.classify(user_input)
+        if sem_intent and sem_confidence >= threshold:
+            logger.info("intent_resolved",
+                         user_goals=sem_intent.get("user_goals", []),
+                         task_type=sem_intent.get("task_type"),
+                         confidence=sem_confidence, source="semantic")
+
+        prev_category = prev_entities.get("category")
+        do_recall, recall_reason = await should_recall_dual(
+            user_input, user_id, current_category=None, prev_category=prev_category,
         )
+        if do_recall:
+            memory_task = recall(user_id, user_input)
+            logger.info("recall_triggered", reason=recall_reason)
+        else:
+            memory_task = _empty_list()
+
+        memories, summary, user_profile = await asyncio.gather(
+            memory_task, summary_task, profile_task,
+        )
+
+        context_hint = build_context_hint(
+            current_query=user_input,
+            prev_entities=prev_entities,
+            detected_category=detected_category,
+            detected_confidence=detected_confidence,
+            session_window=window,
+            memory_chunks=memories if isinstance(memories, list) else None,
+        )
+        if context_hint:
+            logger.info("context_hint_injected", hint_length=len(context_hint))
+
+        if sem_intent and sem_confidence >= threshold:
+            entities = await extract_entities(user_input, context_hint=context_hint)
+            intent, confidence, source = sem_intent, sem_confidence, "semantic"
+        else:
+            entities, intent, confidence, source = await extract_entities_and_intent(
+                user_input, context_hint=context_hint,
+            )
 
     if entities.get("soft_requirements"):
         entities["soft_requirements"] = normalize_soft_requirements(entities["soft_requirements"])
