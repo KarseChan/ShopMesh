@@ -1,6 +1,7 @@
 "use client";
 
 import { Product } from "@/hooks/useChatStream";
+import { useCart } from "@/contexts/CartContext";
 
 interface ProductCardProps {
   product: Product;
@@ -27,6 +28,7 @@ const FALLBACK_IMG =
   );
 
 export default function ProductCard({ product, rank, onOrder, onProductClick }: ProductCardProps) {
+  const { addToCart } = useCart();
   const displayPrice = product.final_price || product.price;
   const hasDiscount = product.final_price && product.final_price < product.price;
   const platformName = product.platform_id ? PLATFORM_NAMES[product.platform_id] || product.platform_id : "";
@@ -113,14 +115,28 @@ export default function ProductCard({ product, rank, onOrder, onProductClick }: 
         </div>
       )}
 
-      {onOrder && (
+      <div className="mt-3 flex gap-2">
         <button
-          onClick={() => onOrder(product)}
-          className="mt-3 w-full py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
+          onClick={(e) => {
+            e.stopPropagation();
+            addToCart(product.product_id || product.name, 1);
+          }}
+          className="flex-1 py-2 border border-blue-600 text-blue-600 text-sm font-medium rounded-lg hover:bg-blue-50 transition-colors"
         >
-          下单
+          加入购物车
         </button>
-      )}
+        {onOrder && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onOrder(product);
+            }}
+            className="flex-1 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            立即下单
+          </button>
+        )}
+      </div>
     </div>
   );
 }

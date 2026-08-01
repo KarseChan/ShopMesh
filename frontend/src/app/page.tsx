@@ -4,6 +4,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 import ChatBox from "@/components/ChatBox";
+import Cart from "@/components/Cart";
 
 export default function Home() {
   const { isAuthenticated, isLoading, logout, user } = useAuth();
@@ -42,6 +43,7 @@ export default function Home() {
       <div className="flex-1 min-h-0">
         <ChatBox />
       </div>
+      <Cart />
     </div>
   );
 }

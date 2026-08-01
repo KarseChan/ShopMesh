@@ -260,6 +260,60 @@ async def list_messages(conversation_id: str, user_id: str, limit: int = 50):
     return {"messages": messages}
 
 
+# ── 购物车 直连 REST(前端点击直接调,不经 agent/LLM)──
+
+def _cart_uid(body: dict) -> str:
+    from src.auth.context import get_context_user_id
+    return get_context_user_id() or body.get("user_id", "")
+
+
+@app.get("/api/cart")
+async def cart_get(user_id: str = ""):
+    from src.auth.context import get_context_user_id
+    from src.skills import cart_store
+    uid = get_context_user_id() or user_id
+    if not uid:
+        return {"items": [], "count": 0, "total": 0}
+    return await cart_store.get_cart(uid)
+
+
+@app.post("/api/cart/add")
+async def cart_add(request: Request):
+    from src.skills import cart_store, order_service
+    body = await request.json()
+    uid = _cart_uid(body)
+    if not uid:
+        return {"ok": False, "message": "请先登录"}
+    p = order_service._product(body.get("product_id", ""))
+    if not p:
+        return {"ok": False, "message": "商品不存在"}
+    price = p.get("final_price") or p.get("price", 0)
+    await cart_store.add_item(uid, p["product_id"], p.get("name", "商品"), price, int(body.get("quantity", 1)))
+    return {"ok": True, **(await cart_store.get_cart(uid))}
+
+
+@app.post("/api/cart/update")
+async def cart_update(request: Request):
+    from src.skills import cart_store
+    body = await request.json()
+    uid = _cart_uid(body)
+    if not uid:
+        return {"ok": False, "message": "请先登录"}
+    await cart_store.set_qty(uid, body.get("product_id", ""), int(body.get("quantity", 0)))
+    return {"ok": True, **(await cart_store.get_cart(uid))}
+
+
+@app.post("/api/cart/remove")
+async def cart_remove(request: Request):
+    from src.skills import cart_store
+    body = await request.json()
+    uid = _cart_uid(body)
+    if not uid:
+        return {"ok": False, "message": "请先登录"}
+    await cart_store.remove_item(uid, body.get("product_id", ""))
+    return {"ok": True, **(await cart_store.get_cart(uid))}
+
+
 # ── 购物:结算预览 → 确认下单 → 订单查询(购物功能 P2)──
 # 人工闸门:下单必须显式 confirmed=true(SENSITIVE),对应设计里的 HITL 确认。
 
