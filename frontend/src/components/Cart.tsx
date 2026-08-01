@@ -4,16 +4,39 @@ import { useState } from "react";
 import { useCart } from "@/contexts/CartContext";
 
 export default function Cart() {
-  const { cart, isOpen, open, close, updateQty, removeItem, checkout } = useCart();
+  const { cart, isOpen, open, close, updateQty, removeItem, checkout, pay } = useCart();
   const [placing, setPlacing] = useState(false);
   const [result, setResult] = useState<string | null>(null);
+  const [pendingOrder, setPendingOrder] = useState<string | null>(null);
+  const [paid, setPaid] = useState(false);
 
   const onCheckout = async () => {
     setPlacing(true);
     setResult(null);
+    setPaid(false);
     const r = await checkout();
     setPlacing(false);
-    setResult(r.ok ? `下单成功！订单号 ${r.order_id}，¥${r.total_price}（待支付）` : r.message || "下单失败");
+    if (r.ok && r.order_id) {
+      setPendingOrder(r.order_id);
+      setResult(`已创建订单 ${r.order_id}，¥${r.total_price}，待支付`);
+    } else {
+      setPendingOrder(null);
+      setResult(r.message || "下单失败");
+    }
+  };
+
+  const onPay = async () => {
+    if (!pendingOrder) return;
+    setPlacing(true);
+    const r = await pay(pendingOrder);
+    setPlacing(false);
+    if (r.ok && r.status === "paid") {
+      setPaid(true);
+      setResult(`支付成功！订单 ${pendingOrder} 已完成 🎉`);
+      setPendingOrder(null);
+    } else {
+      setResult(r.message || "支付失败");
+    }
   };
 
   return (
@@ -84,13 +107,23 @@ export default function Cart() {
                 <span className="text-gray-500">合计</span>
                 <span className="text-xl font-bold text-red-600">¥{cart.total}</span>
               </div>
-              <button
-                onClick={onCheckout}
-                disabled={cart.items.length === 0 || placing}
-                className="w-full rounded-lg bg-blue-600 py-2.5 font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-              >
-                {placing ? "下单中…" : "确认下单"}
-              </button>
+              {pendingOrder && !paid ? (
+                <button
+                  onClick={onPay}
+                  disabled={placing}
+                  className="w-full rounded-lg bg-green-600 py-2.5 font-medium text-white hover:bg-green-700 disabled:opacity-50"
+                >
+                  {placing ? "支付中…" : "去支付（沙箱）"}
+                </button>
+              ) : (
+                <button
+                  onClick={onCheckout}
+                  disabled={cart.items.length === 0 || placing}
+                  className="w-full rounded-lg bg-blue-600 py-2.5 font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {placing ? "下单中…" : "确认下单"}
+                </button>
+              )}
             </div>
           </div>
         </div>

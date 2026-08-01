@@ -43,6 +43,11 @@ vector_db:
 redis:
   url: ${REDIS_URL:-redis://localhost:16379}
 
+# Payment(沙箱/mock;真实接入换成支付网关的 hosted checkout + webhook)
+payment:
+  webhook_secret: ${PAYMENT_WEBHOOK_SECRET:-dev-pay-secret-change-me}
+  order_timeout_sec: 900   # 15 分钟未支付 → Celery 自动取消并释放库存
+
 # Database
 database:
   url: ${DATABASE_URL:-postgresql://postgres:password@localhost:15432/shopping_agent}

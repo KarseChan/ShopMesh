@@ -210,6 +210,37 @@ async def cancel_order(order_id: str, user_id: str | None = None) -> dict:
     return {"ok": True, "order_id": order_id, "status": "cancelled"}
 
 
+async def mark_paid(order_id: str) -> dict:
+    """支付成功:awaiting_payment → paid(幂等)。库存在下单时已预占,此处不再变动。
+
+    仅应由**验签通过的支付 webhook** 调用,不能由前端直接触发。
+    """
+    o = await asyncio.to_thread(_db_get, order_id)
+    if not o:
+        return {"ok": False, "message": "订单不存在"}
+    if o.status == "paid":
+        return {"ok": True, "order_id": order_id, "status": "paid", "idempotent": True}
+    if o.status != "awaiting_payment":
+        return {"ok": False, "message": f"状态({o.status})不可支付"}
+    await asyncio.to_thread(_db_set_status, order_id, "paid")
+    logger.info("order_paid", order_id=order_id)
+    return {"ok": True, "order_id": order_id, "status": "paid"}
+
+
+def list_expired_awaiting(older_than_sec: int) -> list[str]:
+    """返回超过 older_than_sec 未支付(awaiting_payment)的订单号 —— 供 Celery 超时取消。"""
+    from datetime import datetime, timedelta
+    from sqlmodel import select
+    from src.db.engine import get_session
+    from src.db.models import Order
+    cutoff = datetime.utcnow() - timedelta(seconds=older_than_sec)
+    with get_session() as s:
+        rows = s.exec(
+            select(Order).where(Order.status == "awaiting_payment").where(Order.created_at < cutoff)
+        ).all()
+        return [o.order_id for o in rows]
+
+
 async def get_order(order_id: str) -> dict | None:
     o = await asyncio.to_thread(_db_get, order_id)
     return _order_to_dict(o) if o else None

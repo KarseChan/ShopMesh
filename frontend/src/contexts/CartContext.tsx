@@ -32,6 +32,7 @@ interface CartCtx {
   removeItem: (productId: string) => Promise<void>;
   refresh: () => Promise<void>;
   checkout: () => Promise<OrderResult>;
+  pay: (orderId: string) => Promise<OrderResult>;
 }
 
 const Ctx = createContext<CartCtx | null>(null);
@@ -114,8 +115,19 @@ export function CartProvider({ children }: { children: ReactNode }) {
     return res;
   }, [post, uid, refresh]);
 
+  const pay = useCallback(
+    async (orderId: string): Promise<OrderResult> => {
+      // 1. 创建支付会话(真实场景返回支付网关 hosted checkout URL,跳转过去付款)
+      const sess = await fetch(`/api/orders/${orderId}/pay`, { method: "POST", headers: headers() }).then((r) => r.json());
+      if (!sess.ok) return sess;
+      // 2. mock:调用"支付方"模拟页完成付款 → 支付方回调 webhook → 订单转 paid
+      return fetch(sess.pay_url, { method: "POST", headers: headers() }).then((r) => r.json());
+    },
+    [headers]
+  );
+
   return (
-    <Ctx.Provider value={{ cart, isOpen, open: () => setOpen(true), close: () => setOpen(false), addToCart, updateQty, removeItem, refresh, checkout }}>
+    <Ctx.Provider value={{ cart, isOpen, open: () => setOpen(true), close: () => setOpen(false), addToCart, updateQty, removeItem, refresh, checkout, pay }}>
       {children}
     </Ctx.Provider>
   );

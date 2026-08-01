@@ -366,6 +366,36 @@ async def get_order_endpoint(order_id: str):
     return o or {"ok": False, "message": "订单不存在"}
 
 
+# ── 支付(P3,沙箱)——只信验签 webhook,后端不接触支付凭证 ──
+
+@app.post("/api/orders/{order_id}/pay")
+async def order_pay(order_id: str):
+    """创建支付会话,返回支付跳转地址(真实场景为支付网关 hosted checkout)。"""
+    from src.skills import order_service, payment_service
+    o = await order_service.get_order(order_id)
+    if not o:
+        return {"ok": False, "message": "订单不存在"}
+    if o["status"] != "awaiting_payment":
+        return {"ok": False, "message": f"订单状态({o['status']})不可支付"}
+    return await payment_service.create_session(order_id, o["total_price"])
+
+
+@app.post("/api/payments/webhook")
+async def payment_webhook(request: Request):
+    """支付方回调:验签后幂等地标记订单 paid。订单转 paid 只能经此路径。"""
+    from src.skills import payment_service
+    raw = await request.body()
+    signature = request.headers.get("x-signature", "")
+    return await payment_service.handle_webhook(raw, signature)
+
+
+@app.post("/api/payments/{payment_ref}/simulate")
+async def payment_simulate(payment_ref: str):
+    """【mock 支付方】模拟用户完成付款 → 生成已签名 webhook 走验签路径。仅沙箱演示用。"""
+    from src.skills import payment_service
+    return await payment_service.simulate_payment(payment_ref)
+
+
 @app.get("/api/tasks/{task_id}")
 async def get_task_status(task_id: str):
     """Query Celery task status.
