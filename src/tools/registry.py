@@ -12,6 +12,7 @@ import src.tools.multi_query_search  # noqa: F401
 import src.tools.product_detail      # noqa: F401
 import src.tools.review_tool         # noqa: F401
 import src.tools.agent_tools         # noqa: F401
+import src.tools.cart_tools          # noqa: F401
 
 
 def get_dynamic_tools() -> list[ToolDef]:

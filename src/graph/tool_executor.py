@@ -109,9 +109,13 @@ async def execute_tool(name: str, args: dict) -> dict:
         logger.error("tool_not_found", tool=name)
         return {"success": False, "error": f"Tool '{name}' not found"}
 
-    # Permission check (currently all tools are READ — auto-pass)
+    # Permission check:
+    # - READ: always allowed
+    # - WRITE (如购物车增删改,可撤销): 允许 agent 直接调用
+    # - SENSITIVE (下单/支付/退款): 在此拦截,必须走 HITL 确认子图,不能从普通工具循环执行
+    from src.skills.schema import PermissionLevel
     try:
-        check_permission(tool.permissions)
+        check_permission(tool.permissions, user_confirmed=(tool.permissions == PermissionLevel.WRITE))
     except PermissionViolation as e:
         logger.warning("tool_permission_denied", tool=name, reason=str(e))
         return {"success": False, "error": str(e)}
