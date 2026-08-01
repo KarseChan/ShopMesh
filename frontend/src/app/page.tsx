@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 import ChatBox from "@/components/ChatBox";
 import Cart from "@/components/Cart";
+import Orders from "@/components/Orders";
 
 export default function Home() {
   const { isAuthenticated, isLoading, logout, user } = useAuth();
@@ -44,6 +45,7 @@ export default function Home() {
         <ChatBox />
       </div>
       <Cart />
+      <Orders />
     </div>
   );
 }

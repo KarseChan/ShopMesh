@@ -358,12 +358,43 @@ async def create_order_endpoint(request: Request):
     return await order_service.create_order_from_cart(user_id, session_id, idempotency_key=idem)
 
 
+@app.get("/api/orders")
+async def list_orders_endpoint(request: Request, user_id: str = "", limit: int = 50):
+    """订单历史(当前用户)。"""
+    from src.auth.context import get_context_user_id
+    from src.skills import order_service
+    uid = get_context_user_id() or user_id
+    if not uid:
+        return {"orders": []}
+    return {"orders": await order_service.list_orders(uid, limit)}
+
+
 @app.get("/api/orders/{order_id}")
 async def get_order_endpoint(order_id: str):
     """查询订单状态。"""
     from src.skills import order_service
     o = await order_service.get_order(order_id)
     return o or {"ok": False, "message": "订单不存在"}
+
+
+@app.post("/api/orders/{order_id}/cancel")
+async def cancel_order_endpoint(order_id: str, request: Request):
+    """取消未支付订单(释放库存)。"""
+    from src.auth.context import get_context_user_id
+    from src.skills import order_service
+    body = await request.json() if request.headers.get("content-length") else {}
+    uid = get_context_user_id() or body.get("user_id")
+    return await order_service.cancel_order(order_id, user_id=uid)
+
+
+@app.post("/api/orders/{order_id}/refund")
+async def refund_order_endpoint(order_id: str, request: Request):
+    """已支付订单退款(退款 + 释放库存)。"""
+    from src.auth.context import get_context_user_id
+    from src.skills import order_service
+    body = await request.json() if request.headers.get("content-length") else {}
+    uid = get_context_user_id() or body.get("user_id")
+    return await order_service.refund_order(order_id, user_id=uid)
 
 
 # ── 支付(P3,沙箱)——只信验签 webhook,后端不接触支付凭证 ──

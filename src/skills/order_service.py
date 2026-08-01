@@ -124,7 +124,20 @@ def _order_to_dict(o) -> dict:
         "status": o.status, "total_price": o.total_price,
         "items": json.loads(o.items_json) if o.items_json else [],
         "idempotency_key": o.idempotency_key,
+        "created_at": o.created_at.isoformat() if o.created_at else "",
     }
+
+
+def _db_list(user_id: str, limit: int = 50) -> list[dict]:
+    from sqlmodel import select, col
+    from src.db.engine import get_session
+    from src.db.models import Order
+    with get_session() as s:
+        rows = s.exec(
+            select(Order).where(Order.user_id == user_id)
+            .order_by(col(Order.created_at).desc()).limit(limit)
+        ).all()
+        return [_order_to_dict(o) for o in rows]
 
 
 # ── 对外:创建/取消/查询 ──
@@ -239,6 +252,30 @@ def list_expired_awaiting(older_than_sec: int) -> list[str]:
             select(Order).where(Order.status == "awaiting_payment").where(Order.created_at < cutoff)
         ).all()
         return [o.order_id for o in rows]
+
+
+async def refund_order(order_id: str, user_id: str | None = None) -> dict:
+    """退款:已支付订单 paid → refunded,并释放库存。
+
+    真实场景需调用支付网关退款 API;此处 mock 直接转状态 + 释放库存。
+    """
+    o = await asyncio.to_thread(_db_get, order_id)
+    if not o:
+        return {"ok": False, "message": "订单不存在"}
+    if user_id and o.user_id != user_id:
+        return {"ok": False, "message": "无权操作该订单"}
+    if o.status != "paid":
+        return {"ok": False, "message": f"当前状态({o.status})不可退款"}
+    items = json.loads(o.items_json) if o.items_json else []
+    for it in items:
+        await _release(it["product_id"], int(it["qty"]))
+    await asyncio.to_thread(_db_set_status, order_id, "refunded")
+    logger.info("order_refunded", order_id=order_id, released=len(items))
+    return {"ok": True, "order_id": order_id, "status": "refunded"}
+
+
+async def list_orders(user_id: str, limit: int = 50) -> list[dict]:
+    return await asyncio.to_thread(_db_list, user_id, limit)
 
 
 async def get_order(order_id: str) -> dict | None:
