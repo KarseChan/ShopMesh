@@ -8,6 +8,7 @@ from math import sqrt
 
 from qdrant_client.models import FieldCondition, Filter, MatchAny, MatchValue, MatchText, Range
 
+from src.agents.scenario_filter import get_scenario_categories
 from src.tools.search_tool import load_products
 
 # Cache for available categories
@@ -304,6 +305,7 @@ async def build_filter(entities: dict) -> Filter | None:
     # vector search instead of producing a category filter that matches nothing.
     category = entities.get("category")
     product_type = entities.get("product_type")
+    category_filtered = False
 
     if product_type and product_type in _get_all_product_types():
         conditions.append(FieldCondition(
@@ -314,6 +316,7 @@ async def build_filter(entities: dict) -> Filter | None:
         conditions.append(FieldCondition(
             key="category", match=MatchValue(value=category)
         ))
+        category_filtered = True
 
     # Brand filter (exact match on brand field)
     brand = entities.get("brand")
@@ -348,6 +351,23 @@ async def build_filter(entities: dict) -> Filter | None:
         conditions.append(FieldCondition(
             key="category", match=MatchAny(any=categories)
         ))
+        category_filtered = True
+
+    # Scenario category whitelist (e.g. 送礼 → only 护肤/数码/服饰/运动).
+    # Push the whitelist INTO the Qdrant pre-filter so HNSW only traverses
+    # gift-appropriate categories. Without this, an anchor-less query like
+    # "送女朋友的生日礼物" recalls a top-K dominated by 奶茶, and the scenario
+    # post-filter then empties the result. Skip when the user already gave an
+    # explicit category — respect their choice over the scenario heuristic.
+    if not category_filtered:
+        scenario_cats = get_scenario_categories(entities)
+        if scenario_cats and scenario_cats.get("allowed"):
+            allowed = [c for c in scenario_cats["allowed"]
+                       if c in set(_get_all_categories())]
+            if allowed:
+                conditions.append(FieldCondition(
+                    key="category", match=MatchAny(any=allowed)
+                ))
 
     if not conditions:
         return None

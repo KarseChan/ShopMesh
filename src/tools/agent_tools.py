@@ -23,7 +23,11 @@ _RELAXATION_STEPS = [
 ]
 
 
-async def constraint_relaxation(entities: dict, failed_reason: str) -> dict:
+async def constraint_relaxation(
+    entities: dict,
+    failed_reason: str,
+    protected_fields: list[str] | None = None,
+) -> dict:
     """Relax search constraints step by step, return relaxed entities.
 
     Strategy (in order):
@@ -37,14 +41,21 @@ async def constraint_relaxation(entities: dict, failed_reason: str) -> dict:
     Args:
         entities: Current structured entities
         failed_reason: Why relaxation is needed (e.g. "结果过少")
+        protected_fields: Fields that must NOT be relaxed. Used by the
+            product_search auto-relaxation loop to protect identity constraints
+            (product_type/category) — we widen budget/brand/preference to find
+            something, but never show a phone to a face-cream request.
 
     Returns:
         {"entities": dict, "relaxed": list[str], "steps_remaining": int}
     """
+    protected = set(protected_fields or [])
     relaxed = []
     new_entities = {**entities}
 
     for field, description in _RELAXATION_STEPS:
+        if field in protected:
+            continue
         current = new_entities.get(field)
         # Check if field has a meaningful value (not None, not empty list)
         if current is not None and current != []:
@@ -56,7 +67,7 @@ async def constraint_relaxation(entities: dict, failed_reason: str) -> dict:
 
     steps_remaining = sum(
         1 for f, _ in _RELAXATION_STEPS
-        if new_entities.get(f) is not None and new_entities.get(f) != []
+        if f not in protected and new_entities.get(f) is not None and new_entities.get(f) != []
     )
 
     return {
@@ -107,6 +118,7 @@ async def ask_clarification(entities: dict, asked_fields: list[str], search_fail
 
     # Search failed (0 results) with active constraints → force ask to resolve conflict
     if search_failed:
+        brand = entities.get("brand")
         active_constraints = []
         if brand:
             active_constraints.append(f"品牌={brand}")

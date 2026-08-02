@@ -30,7 +30,7 @@ docker compose -f docker-compose.infra.yml up -d        # 依赖容器
 - 改后端要重启 uvicorn(除非 --reload)。
 
 ## 下一步(见 reports/roadmap.md,按优先级)
-1. 修 eval 找到的缺陷闭环:无解预算 → 触发 `constraint_relaxation`(系统已有该工具,只是空结果时没自动放宽);礼物类无锚点召回打空 → 优化召回。修完重跑 `scripts/eval_recommendation.py` 看分数提升。
+1. ✅ 已完成:Eval 缺陷闭环。无解预算 → `product_search` 空结果时确定性放宽(护 product_type/category)+ 最便宜替代 + 放宽提示;礼物类无锚点召回 → 场景品类白名单下推 Qdrant 预过滤。72.4%→96.6%,回归测试 `tests/test_recall_relaxation.py`。
 2. 工程收尾:静默异常治理(auth/memory 的 `except: pass`)、双迁移定 source of truth。
 3. 可选:真实支付接入(mock→hosted checkout)、履约状态、收货地址。
 

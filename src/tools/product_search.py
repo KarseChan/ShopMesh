@@ -9,11 +9,24 @@ Agent calls this single tool instead of managing low-level retrieval details.
 
 from src.agents.ranker import rank
 from src.agents.scenario_filter import filter_by_scenario
+from src.models.embedder import get_embedder
 from src.observability.logger import get_logger
 from src.retrieval.hybrid_retriever import hybrid_search
+from src.tools.agent_tools import constraint_relaxation
 from src.tools.schema import ToolDef, tool_registry
 
 logger = get_logger("product_search_tool")
+
+# Identity constraints never auto-relaxed: we widen budget/brand/preference to
+# find *something*, but never swap the kind of product the user asked for.
+_PROTECTED_ON_RELAX = ["product_type", "category"]
+
+# Cap on auto-relaxation rounds (each round relaxes one constraint + re-searches).
+_MAX_RELAX_ROUNDS = 4
+
+# Candidate pool size when surfacing cheapest alternatives after a budget relax.
+# Larger than the usual top_k so the price sort sees genuinely cheap matches.
+_CHEAPEST_POOL_K = 100
 
 
 def _post_filter(products: list[dict], entities: dict) -> list[dict]:
@@ -52,26 +65,32 @@ def _post_filter(products: list[dict], entities: dict) -> list[dict]:
     return kept
 
 
-async def product_search(
+async def _retrieve_and_rank(
     entities: dict,
     semantic_query: str,
-    top_k: int = 10,
-    max_results: int = 10,
-    memory_signals: dict | None = None,
-) -> dict:
-    """One-stop product retrieval: hybrid search + multi-objective ranking.
+    query_vector: list[float],
+    top_k: int,
+    max_results: int,
+    memory_signals: dict | None,
+    prefer_cheapest: bool = False,
+) -> tuple[list[dict], dict]:
+    """Single retrieve → rank → hard-filter pass. Returns (ranked, search_meta).
 
-    Args:
-        entities: Structured entities (category, brand, price_max, scenario, etc.)
-        semantic_query: Semantic search text (keywords/description from user need)
-        top_k: Number of results to retrieve from vector search
-        max_results: Max results to return (caps ranked output, saves LLM tokens)
+    Factored out so the auto-relaxation loop can re-run it with relaxed entities
+    while reusing the same precomputed query embedding.
 
-    Returns:
-        {"results": [...], "total": int, "filter_applied": bool, "latency_ms": float}
+    prefer_cheapest: when the budget ceiling was relaxed (nothing met the user's
+        max price), sort ascending by price BEFORE capping, so we surface the
+        cheapest available — genuinely "closest to your budget" rather than the
+        most semantically-relevant (and often most expensive) items.
     """
-    # Step 1: Hybrid retrieval (vector + payload pre-filter)
-    search_result = await hybrid_search(semantic_query, entities, top_k=top_k)
+    # Step 1: Hybrid retrieval (vector + payload pre-filter).
+    # When preferring cheapest (budget relaxed), widen the candidate pool so the
+    # price sort sees the globally cheapest matches, not just the cheapest among
+    # the top-K by relevance (the cheapest item is often not the most relevant).
+    retrieval_k = max(top_k, _CHEAPEST_POOL_K) if prefer_cheapest else top_k
+    search_result = await hybrid_search(semantic_query, entities, top_k=retrieval_k,
+                                        query_vector=query_vector)
     results = search_result["results"]
 
     # Step 2: Extract search scores and products
@@ -87,14 +106,79 @@ async def product_search(
     ranked = await rank(products, search_scores=search_scores, entities=entities,
                         memory_signals=memory_signals, original_query=semantic_query)
 
-    # Step 3.5: Hard post-filters (budget + scenario) — P0-2 safety nets
+    # Step 3.5: Hard post-filters (budget + scenario) — P0-2 safety nets.
+    # NOTE: uses the SAME (possibly relaxed) entities, so a relaxed price ceiling
+    # is honored here too — over-budget items only survive when we intentionally
+    # relaxed the budget, never due to a filter miss.
     ranked = _post_filter(ranked, entities)
+
+    # When the budget ceiling was relaxed, cheapest-first = closest to the user's
+    # intent (they asked for "at most ¥X"). Sort before capping so the top items
+    # are the globally cheapest, not the cheapest among the top-K by relevance.
+    if prefer_cheapest:
+        ranked = sorted(ranked, key=lambda p: (p.get("price") is None, p.get("price") or 0))
 
     # Step 4: Cap results to save LLM tokens
     ranked = ranked[:max_results]
+    return ranked, search_result
 
-    # Step 5: Split exact vs supplemental matches
-    product_type = entities.get("product_type")
+
+async def product_search(
+    entities: dict,
+    semantic_query: str,
+    top_k: int = 10,
+    max_results: int = 10,
+    memory_signals: dict | None = None,
+) -> dict:
+    """One-stop product retrieval: hybrid search + multi-objective ranking.
+
+    On empty results, deterministically relaxes the least-important constraint
+    (budget/brand/preference/scenario — never product_type/category) and
+    re-searches, so an unsatisfiable request (e.g. "面霜 ≤¥300" when the cheapest
+    is ¥574) returns the closest labeled alternative instead of nothing. This is
+    done in code rather than left to the LLM to notice, so it always fires.
+
+    Args:
+        entities: Structured entities (category, brand, price_max, scenario, etc.)
+        semantic_query: Semantic search text (keywords/description from user need)
+        top_k: Number of results to retrieve from vector search
+        max_results: Max results to return (caps ranked output, saves LLM tokens)
+
+    Returns:
+        {"results": [...], "total": int, "filter_applied": bool, "latency_ms": float,
+         "relaxed": bool, "relaxed_constraints": [...], "relaxation_note": str}
+    """
+    # Embed once — the relaxation loop re-searches with the same query text.
+    query_vector = await get_embedder().aembed(semantic_query)
+
+    search_entities = dict(entities)
+    ranked, search_result = await _retrieve_and_rank(
+        search_entities, semantic_query, query_vector, top_k, max_results, memory_signals)
+
+    # Step 3.6: Auto-relaxation — if empty, widen constraints one at a time.
+    orig_had_price_max = entities.get("price_max") is not None
+    relaxed_constraints: list[str] = []
+    if not ranked:
+        for _ in range(_MAX_RELAX_ROUNDS):
+            relax = await constraint_relaxation(
+                search_entities, "结果为空", protected_fields=_PROTECTED_ON_RELAX)
+            if not relax["relaxed"]:
+                break  # nothing left to relax (only protected fields remain)
+            search_entities = relax["entities"]
+            relaxed_constraints.extend(relax["relaxed"])
+            # If the user's price ceiling has been dropped, surface cheapest-first.
+            prefer_cheapest = orig_had_price_max and search_entities.get("price_max") is None
+            ranked, search_result = await _retrieve_and_rank(
+                search_entities, semantic_query, query_vector, top_k, max_results,
+                memory_signals, prefer_cheapest=prefer_cheapest)
+            if ranked:
+                break
+        if relaxed_constraints:
+            logger.info("product_search_relaxed",
+                        relaxed=relaxed_constraints, recovered=len(ranked))
+
+    # Step 5: Split exact vs supplemental matches (use relaxed entities)
+    product_type = search_entities.get("product_type")
     exact_ids, supplemental_ids = _split_matches(ranked, product_type)
 
     logger.info("product_search_done",
@@ -107,6 +191,13 @@ async def product_search(
     # Step 6: Build slim results for Agent prompt + full results for result store
     slim_results = [_slim_product(p) for p in ranked]
 
+    relaxation_note = ""
+    if relaxed_constraints:
+        relaxation_note = (
+            "没有完全符合条件的商品，已为你放宽：" + "、".join(relaxed_constraints)
+            + "，以下是最接近的结果。"
+        )
+
     return {
         "results": slim_results,
         "_full_products": ranked,
@@ -118,6 +209,9 @@ async def product_search(
         "display_product_ids": exact_ids,
         "filter_applied": search_result["filter_applied"],
         "latency_ms": search_result["latency_ms"],
+        "relaxed": bool(relaxed_constraints),
+        "relaxed_constraints": relaxed_constraints,
+        "relaxation_note": relaxation_note,
     }
 
 

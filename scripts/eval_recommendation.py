@@ -74,23 +74,39 @@ async def main():
 
     rows = []
     agg = {}
+    # Graceful degradation: when a request is unsatisfiable (e.g. no 面霜 ≤¥300),
+    # did the system recover with a labeled relaxation instead of returning empty?
+    degrade_total = 0
+    degrade_ok = 0
     for name, entities, query, expect in EVAL_SET:
         r = await product_search(entities=entities, semantic_query=query, top_k=30, max_results=10)
         products = r.get("_full_products", r.get("results", []))
         checks = _check(products, expect)
-        rows.append((name, len(products), checks))
+        relaxed = bool(r.get("relaxed"))
+        relaxed_constraints = r.get("relaxed_constraints", [])
+        if relaxed:
+            degrade_total += 1
+            degrade_ok += 1 if checks["non_empty"] else 0
+        rows.append((name, len(products), checks, relaxed, relaxed_constraints))
         for k, v in checks.items():
             agg.setdefault(k, []).append(v)
 
     print("\n" + "=" * 72)
     print("推荐质量 Eval 报告")
     print("=" * 72)
-    for name, n, checks in rows:
-        marks = "  ".join(f"{k}={'✓' if v else '✗'}" for k, v in checks.items())
-        print(f"  {name:16s} n={n:<3d} {marks}")
+    for name, n, checks, relaxed, relaxed_constraints in rows:
+        # A relaxed budget failure is INTENDED (unsatisfiable constraint) — flag
+        # it as ↺ rather than a plain ✗ so it reads as graceful degradation.
+        def _mark(k, v):
+            if k == "budget" and not v and relaxed:
+                return "↺"
+            return "✓" if v else "✗"
+        marks = "  ".join(f"{k}={_mark(k, v)}" for k, v in checks.items())
+        tag = f"  [↺放宽:{'、'.join(relaxed_constraints)}]" if relaxed else ""
+        print(f"  {name:16s} n={n:<3d} {marks}{tag}")
 
     print("-" * 72)
-    print("各指标通过率:")
+    print("各指标通过率(严格定义,未因放宽而放松):")
     for k in ("non_empty", "budget", "product_type", "category", "scenario"):
         if k in agg:
             vals = agg[k]
@@ -99,6 +115,9 @@ async def main():
     overall = [v for vals in agg.values() for v in vals]
     print("-" * 72)
     print(f"  总体通过率     {sum(overall)/len(overall)*100:5.1f}%  ({sum(overall)}/{len(overall)})")
+    if degrade_total:
+        print(f"  优雅降级       {degrade_ok/degrade_total*100:5.1f}%  ({degrade_ok}/{degrade_total})"
+              "  ← 无解约束时以带标注的放宽结果替代空结果(budget=↺ 为有意放宽,非回归)")
     print("=" * 72)
 
 

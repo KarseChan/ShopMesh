@@ -28,6 +28,7 @@ from src.graph.specialized_agents import (
     should_continue,
 )
 from src.graph.stream_utils import (
+    extract_relaxation_note,
     extract_search_results_from_tool_log,
     stream_explanation,
     stream_narrative,
@@ -213,6 +214,13 @@ async def run_multi_agent_stream(
         used_fallback = state_values.get("used_fallback", False)
         if not search_results and not used_fallback:
             search_results = extract_search_results_from_tool_log(tool_log)
+
+        # Deterministically surface constraint relaxation (e.g. budget widened
+        # because nothing met the user's ceiling). Prepend to the summary so the
+        # relaxed over-budget results are never shown without explanation.
+        relaxation_note = extract_relaxation_note(tool_log)
+        if relaxation_note and relaxation_note not in final_response:
+            final_response = (relaxation_note + "\n\n" + final_response).strip()
 
         # Supplement from response_data
         if response_data:

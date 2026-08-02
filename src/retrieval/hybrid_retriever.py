@@ -33,6 +33,7 @@ async def hybrid_search(
     entities: dict,
     top_k: int = 10,
     collection: str | None = None,
+    query_vector: list[float] | None = None,
 ) -> dict:
     """One-step hybrid retrieval: semantic search + payload pre-filter.
 
@@ -41,6 +42,9 @@ async def hybrid_search(
         entities: Extracted entities for filtering
         top_k: Number of results to return
         collection: Qdrant collection name (default from config)
+        query_vector: Precomputed embedding for `query`. When provided, skips
+            re-embedding — used by constraint relaxation, which re-searches with
+            the same query text but relaxed filters (bge-m3 CPU embed is ~6-9s).
 
     Returns:
         {
@@ -55,10 +59,11 @@ async def hybrid_search(
 
     col = collection or config["vector_db"]["collection"]
     store = get_vector_store()
-    embedder = get_embedder()
 
-    # Build query vector
-    query_vector = await embedder.aembed(query)
+    # Build query vector (reuse precomputed one when relaxation re-searches)
+    if query_vector is None:
+        embedder = get_embedder()
+        query_vector = await embedder.aembed(query)
 
     # Build payload filter from entities
     qdrant_filter = await build_filter(entities)

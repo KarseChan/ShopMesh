@@ -10,19 +10,21 @@
 - P0-3 流式进度 + 重试按钮 + **中间件缓冲修复**(BaseHTTPMiddleware→纯 ASGI)
 - 登录修复(auth 响应 camelCase)、数据源统一(load_products→5k)
 - P1-1 架构收敛:删死代码、单一执行路径、移除 orchestrator DAG
-- 延迟:P-1 逐商品文案确定性化、P-3 summary 模板化、P-4 意图/实体规则快路径(实测 116s→47s)
+- 延迟:P-1 逐商品文案确定性化、P-2 收敛 agent 冗余工具调用、P-3 summary 模板化、P-4 意图/实体规则快路径(实测 116s→22–39s)
 - **购物功能 P1–P4**:购物车 / 订单(确定性 commit·库存·幂等·状态机)/ 支付(签名 webhook·超时取消)/ 退款·订单历史
+- **Eval 缺陷闭环(72.4%→96.6%)**:① 礼物场景无锚点召回打空 → 场景品类白名单下推到 Qdrant 预过滤(`filter_builder`);② 无解预算返回空 → `product_search` 检测空结果时确定性放宽(护 product_type/category 不动)+ 最接近(最便宜)替代 + 用户可见放宽提示;附带修 `ask_clarification` search_failed 分支 NameError。回归测试 `tests/test_recall_relaxation.py`(13 条)。
 
 ---
 
 ## 剩余任务
 
 ### A. 延迟
-- **P-2 收敛 agent 冗余工具调用** ⬜ — 最大剩余杠杆。agent 多调 review_summary(实测 ×2,~20s),47s→~27s,并修 UI"×2"展示。
-- embedding 瓶颈(bge-m3 CPU ~9s/次)⬜ — semantic_router + 记忆召回仍各含一次;可规则快路径再跳过,或 GPU/小模型(基建)。
+- **P-2 收敛 agent 冗余工具调用** ✅ — 已完成(commit 31648a3)。
+- embedding 瓶颈(bge-m3 CPU ~9s/次)⬜ — semantic_router + 记忆召回仍各含一次;可规则快路径再跳过,或 GPU/小模型(基建)。注:放宽重检索已复用 embedding(`hybrid_search(query_vector=...)`),不再二次 embed。
 
 ### B. 质量 / 可靠性
-- **Eval harness** ⬜ — 量化推荐命中率、工具调用正确率、错误恢复成功率、混合检索 vs 纯向量 recall。**最大差异化点**,基于已有回归测试扩展。
+- **Eval harness** ✅ — `scripts/eval_recommendation.py`,现含「优雅降级」指标(无解约束时以带标注放宽替代空结果)。
+- **Eval 缺陷闭环** ✅ — 见「已完成」。72.4%→96.6%。
 - agent 工具调用稳定性 ⬜ — 有时跳过 product_search / 过度调用(与 P-2 同源),prompt + 循环收敛。
 - test_tools.py 4 个既有失败 ⬜ — `test_all_six_tools_registered` 硬编码 6 工具(现 8+);ask_clarification/constraint_relaxation 漂移。
 
@@ -44,6 +46,8 @@
 
 ## 建议顺序(Top）
 
-1. **P-2 收敛 agent 冗余调用** — 具体、可验证、一箭三雕(延迟+可靠+UI);更稳的 agent 也让后续 eval 测量更可靠。
-2. **Eval harness** — 面试杀手锏,数据驱动。
+> P-2、Eval harness、Eval 缺陷闭环均已完成。下一批:
+
+1. **工程收尾** — 静默异常治理(`except: pass`)、双迁移定 source of truth(Flyway vs Alembic)。降低隐性风险。
+2. **test_tools.py 4 个既有失败** — `test_all_six_tools_registered` 硬编码工具数、`ask_clarification` 返回 `question_spec`(测试仍断言旧 `questions` 键)、`constraint_relaxation` 只剩 category 时是否放宽。与代码对齐即可。
 3. **README 架构叙事** — 把成果讲清楚,否则做再多也传达不出。

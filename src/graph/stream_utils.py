@@ -52,6 +52,27 @@ def extract_search_results_from_tool_log(tool_calls_log: list) -> list:
     return []
 
 
+def extract_relaxation_note(tool_calls_log: list) -> str:
+    """Return the relaxation note from the most recent product_search, if any.
+
+    product_search auto-relaxes unsatisfiable constraints (e.g. a budget no item
+    meets) and returns over-budget results with `relaxed=True` + a user-facing
+    `relaxation_note`. Surfacing that note deterministically — rather than relying
+    on the LLM to mention it — keeps the response honest: otherwise a relaxed
+    over-budget result looks like the P0 budget bug regressed.
+    """
+    for entry in reversed(tool_calls_log):
+        if entry.get("tool", "") not in ("product_search", "multi_query_search"):
+            continue
+        tool_data = entry.get("result", {})
+        if not isinstance(tool_data, dict):
+            continue
+        data = tool_data.get("data", tool_data)
+        if isinstance(data, dict) and data.get("relaxed"):
+            return data.get("relaxation_note", "")
+    return ""
+
+
 def extract_search_results_from_output(output: dict) -> list:
     """Extract search results from an agent node's output dict.
 
