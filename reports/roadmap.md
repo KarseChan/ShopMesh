@@ -33,7 +33,7 @@
 - 履约状态(shipped→completed)、收货地址、购物车落 Postgres 持久化 ⬜
 
 ### D. 工程收尾
-- 静默异常治理(auth/memory 的 `except: pass`)⬜
+- 静默异常治理(auth/memory 的 `except: pass`)—— Tier 1 ✅(吞异常改为 debug/warning 可观测;apikey commit 失败补 rollback);Tier 2(收窄 `except Exception` 类型)⬜
 - filter_builder 旧时尚 taxonomy 死映射(先与 clarification_router 解耦)⬜
 - **双迁移 source of truth**(Flyway vs Alembic 定一个)⬜
 - README / 简历叙事:过度设计反思 + 架构收敛 + 生产级 agent 交易设计 ⬜

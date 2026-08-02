@@ -130,7 +130,11 @@ def validate_api_key(db: Session, full_key: str) -> ApiKey | None:
         api_key.last_used_at = datetime.now(timezone.utc)
         db.add(api_key)
         db.commit()
-    except Exception:
-        pass  # don't fail auth on tracking error
+    except Exception as e:
+        # Don't fail auth on a tracking-write error, but roll back so the
+        # failed transaction doesn't poison the session, and log so a
+        # persistently failing write is visible instead of silent.
+        db.rollback()
+        logger.warning("apikey_last_used_update_failed", key_id=key_id, error=str(e))
 
     return api_key

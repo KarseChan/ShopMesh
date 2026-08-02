@@ -62,8 +62,10 @@ def query_knowledge(entities: dict) -> dict:
         for promo in data.get("promotions", []):
             if promo["promotion_id"] in promo_ids:
                 promotions.append(promo)
-    except Exception:
-        pass
+    except Exception as e:
+        # Promotions are supplementary — degrade gracefully, but log so a
+        # missing/corrupt data file doesn't silently strip all promo context.
+        logger.warning("promotions_load_failed", data_path=str(data_path), error=str(e))
 
     # Category info
     category_info = ""

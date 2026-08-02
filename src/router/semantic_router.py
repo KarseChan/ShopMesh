@@ -14,7 +14,10 @@ from pathlib import Path
 
 from src.config import config
 from src.models.embedder import get_embedder
+from src.observability.logger import get_logger
 from src.retrieval.vector_store import get_vector_store
+
+logger = get_logger("semantic_router")
 
 _SAMPLES_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "intent_samples.json"
 _COLLECTION = "intent_samples"
@@ -60,8 +63,10 @@ async def build_intent_index():
 
     try:
         await store.create_collection(_COLLECTION, dim)
-    except Exception:
-        pass
+    except Exception as e:
+        # Benign when the collection already exists (index rebuild); log at
+        # debug so a genuine Qdrant failure during setup is not swallowed.
+        logger.debug("intent_collection_ensure_skipped", collection=_COLLECTION, error=str(e))
 
     texts, ids, payloads = [], [], []
     idx = 1

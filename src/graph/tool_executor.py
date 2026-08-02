@@ -89,8 +89,10 @@ def _extract_result_for_log(tool_name: str, result) -> dict:
     if extractor and isinstance(result, dict):
         try:
             return extractor(result)
-        except Exception:
-            pass
+        except Exception as e:
+            # Log-field extraction is best-effort; debug-log so a broken
+            # extractor (e.g. after a result-shape change) is discoverable.
+            logger.debug("result_log_extract_failed", tool=tool_name, error=str(e))
     return {"result_type": type(result).__name__}
 
 

@@ -58,8 +58,11 @@ async def _ensure_collection() -> str:
         await store.create_payload_index(MEMORY_COLLECTION, "category", "keyword")
         await store.create_payload_index(MEMORY_COLLECTION, "memory_signal_type", "keyword")
         logger.info("memory_collection_created", collection=MEMORY_COLLECTION)
-    except Exception:
-        pass  # Collection may already exist
+    except Exception as e:
+        # Usually benign (collection already exists); log at debug so a real
+        # failure (e.g. Qdrant down) is still traceable instead of silent.
+        logger.debug("memory_collection_ensure_skipped",
+                     collection=MEMORY_COLLECTION, error=str(e))
 
     _collection_initialized = True
     return MEMORY_COLLECTION
@@ -185,8 +188,11 @@ async def write_chunk_with_contradiction_awareness(
                             new=user_input[:50],
                             days_old=mem.get("days_old", 0))
                 break
-    except Exception:
-        pass  # recall failure should not block write
+    except Exception as e:
+        # Fail-open: recall failure must not block the write. But log it —
+        # a silently dead recall means contradiction detection is off and
+        # nobody would know.
+        logger.warning("memory_recall_failed_in_write", user_id=user_id, error=str(e))
 
     # Inject contrast context if contradiction found
     enhanced_input = user_input
@@ -262,8 +268,10 @@ async def should_recall_dual(
 
         if results and results[0].get("score", 0) >= semantic_threshold:
             return True, "semantic"
-    except Exception:
-        pass  # collection may not exist yet
+    except Exception as e:
+        # Benign before the collection exists; debug-log so a persistent
+        # failure is visible rather than silently returning "no memory".
+        logger.debug("memory_probe_failed", user_id=user_id, error=str(e))
 
     return False, "none"
 
