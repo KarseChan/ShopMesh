@@ -13,9 +13,8 @@ ollama>=0.4.0
 # Vector DB
 qdrant-client>=1.12.0
 
-# ORM
+# ORM (schema owned by Flyway on the Java side; Python only reads/writes via SQLModel)
 sqlmodel>=0.0.22
-alembic>=1.14.0
 psycopg2-binary>=2.9.9
 
 # Session

@@ -96,7 +96,7 @@ Client → Traefik (:80)
 - **Java 控制面** (`shopmesh-java/`): Auth (register/login/refresh/me)、API Key CRUD、RSA JWT 签发、JWKS 公钥端点、用户事件发布
 - **Python Agent 引擎** (`src/`): LangGraph Agent、Tools、Memory、Celery 后台任务
 - **共享**: PostgreSQL (Java Flyway 管理 schema)、Redis、Qdrant、RabbitMQ
-- **数据库迁移**: Java 用 Flyway (`shopmesh-java/src/main/resources/db/migration/`)，Python 用 Alembic (`alembic/`)，两者写同一个 PostgreSQL
+- **数据库迁移**: **Flyway 是 schema 的唯一 source of truth** (`shopmesh-java/src/main/resources/db/migration/`)。Java 启动时自动迁移 (`spring.flyway`, `ddl-auto=validate`)。Python **不写迁移**、只通过 SQLModel 读写既有 schema。改表 = 新增一个 Flyway `V{n}__*.sql`。详见 [docs/MIGRATIONS.md](docs/MIGRATIONS.md)。
 
 ### JWT 跨语言信任
 
@@ -202,7 +202,7 @@ DAG 任务的 Redis 持久化，支持跨会话恢复：
 ## Development Guidelines
 
 - **Config**: 一切在 `config.yaml`，密钥用 `${ENV_VAR}`（`src/config.py` 加载时自动解析环境变量）
-- **Alembic**: `alembic.ini` 在项目根目录，`script_location = ./alembic`，`sys.path = .`（确保能导入 `src/`）
+- **Schema 变更**: 只加 Flyway `V{n}__*.sql`（Java 侧）；Python 侧不再有 Alembic。SQLModel 模型 (`src/db/models.py`) 需与 Flyway schema 保持一致，仅用于 ORM 读写和测试建表，不驱动迁移。
 - **LLM/Embedding**: 必须 async（`asyncio.to_thread` 包装同步调用）
 - **State**: 只存工作记忆，不存执行日志
 - **Commit messages**: `<动词>: <简述>` (e.g., `fix: 修复 LLM JSON 解析失败`)

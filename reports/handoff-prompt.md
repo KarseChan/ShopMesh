@@ -25,7 +25,7 @@ docker compose -f docker-compose.infra.yml up -d        # 依赖容器
 ## 已知坑(别再踩)
 - LLM 网关 key 会失效/限流(表现为 401 或 "AI 服务暂时不可用"),`.env` 的 `LLM_API_KEY`;网络到外网也不稳,别用会重试到超长的完整 pipeline 做诊断,用带死超时的单次调用。
 - Windows 上 `localhost` 解析到 IPv6,Ollama 只绑 IPv4 → config 里用 `127.0.0.1`。
-- DB 原由 **Flyway(Java)建,无 alembic_version**;我已 stamp 到 `a1c2e3f40501`。改表优先直接 ALTER 再 stamp。
+- DB schema 现由 **Flyway 唯一管理**(Alembic 已删)。改表 = 新增 Flyway `V{n}__*.sql`(Java 侧),Java 启动自动迁移;Python 只读写不迁移。见 [docs/MIGRATIONS.md](../docs/MIGRATIONS.md)。(dev 库残留的 `alembic_version` 表无害,可忽略。)
 - bge-m3 在 CPU 上单次 embedding ~9s,是 preprocess/检索的硬地板。
 - 改后端要重启 uvicorn(除非 --reload)。
 

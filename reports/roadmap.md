@@ -35,7 +35,7 @@
 ### D. 工程收尾
 - 静默异常治理(auth/memory 的 `except: pass`)—— Tier 1 ✅(吞异常改为 debug/warning 可观测;apikey commit 失败补 rollback);Tier 2(收窄 `except Exception` 类型)⬜
 - filter_builder 旧时尚 taxonomy 死映射(先与 clarification_router 解耦)⬜
-- **双迁移 source of truth**(Flyway vs Alembic 定一个)⬜
+- **双迁移 source of truth**(Flyway vs Alembic 定一个)✅ — Flyway 唯一所有者;Alembic(`alembic/`+`alembic.ini`+`scripts/migrate.py`)已删,`a1c2` 补成 Flyway `V5`。见 [docs/MIGRATIONS.md](../docs/MIGRATIONS.md)。
 - README / 简历叙事:过度设计反思 + 架构收敛 + 生产级 agent 交易设计 ⬜
 
 ### E. 运行提醒(非 bug)
