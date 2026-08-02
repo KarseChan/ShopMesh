@@ -33,7 +33,7 @@
 - 履约状态(shipped→completed)、收货地址、购物车落 Postgres 持久化 ⬜
 
 ### D. 工程收尾
-- 静默异常治理(auth/memory 的 `except: pass`)—— Tier 1 ✅(吞异常改为 debug/warning 可观测;apikey commit 失败补 rollback);Tier 2(收窄 `except Exception` 类型)⬜
+- 静默异常治理(auth/memory 的 `except: pass`)—— Tier 1 ✅(吞异常改为 debug/warning 可观测;apikey commit 失败补 rollback);Tier 2 ✅(审计全部 67 处 `except Exception`:绝大多数是 LLM/Qdrant/DB/工具执行的**有意 resilience 边界**,收窄反而降鲁棒性,保留;仅收窄 4 处纯本地操作 —— normalizer/ranker 的 yaml 载入→`(OSError, yaml.YAMLError)`、tool_executor 日志抽取→形状错误、knowledge_base 促销 json 载入→`(OSError, json.JSONDecodeError)`,让真 bug 浮出)
 - filter_builder 旧时尚 taxonomy 死映射 ✅ — 删除 `_expand_category` 整条嵌套 taxonomy 链(`_PRODUCT_TYPE_MAP`/`_BROAD_CATEGORY_MAP`/`_semantic_type_match` 等,现库为扁平品类,该链在检索路径已死);与 clarification_router 无真实耦合(仅同名 `_PRODUCT_TYPE_MAP`,各自独立)。清理 test_p8 里对应的过时用例。
 - **双迁移 source of truth**(Flyway vs Alembic 定一个)✅ — Flyway 唯一所有者;Alembic(`alembic/`+`alembic.ini`+`scripts/migrate.py`)已删,`a1c2` 补成 Flyway `V5`。见 [docs/MIGRATIONS.md](../docs/MIGRATIONS.md)。
 - README / 简历叙事:过度设计反思 + 架构收敛 + 生产级 agent 交易设计 ⬜

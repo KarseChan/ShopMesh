@@ -42,7 +42,11 @@ def _load_synonyms() -> dict[str, list[str]]:
         with open(synonyms_path, encoding="utf-8") as f:
             data = yaml.safe_load(f)
         _SYNONYMS = data.get("synonyms", {})
-    except Exception:
+    except (OSError, yaml.YAMLError) as e:
+        # Synonyms are optional enrichment — degrade to empty if the config is
+        # missing/corrupt. Narrowed from `except Exception` so a real bug (e.g.
+        # a bad data shape) surfaces instead of silently disabling synonyms.
+        logger.warning("synonyms_load_failed", path=str(synonyms_path), error=str(e))
         _SYNONYMS = {}
     return _SYNONYMS
 
