@@ -37,6 +37,17 @@ _GENDER_MAP = {
     "女": "女", "女性": "女", "女士": "女", "女装": "女", "女款": "女",
 }
 
+# Skin-type keywords → canonical value (护肤 clarification answers).
+# Without this, a skin-type reply (e.g. "敏感肌面霜") never rule-matches and
+# always falls to the slow LLM fallback route.
+_SKIN_TYPE_MAP = {
+    "敏感肌": "敏感肌", "敏感": "敏感肌",
+    "干性": "干性", "干皮": "干性",
+    "油性": "油性", "油皮": "油性",
+    "混合性": "混合性", "混合皮": "混合性", "混合": "混合性",
+    "中性": "中性",
+}
+
 # Product type keywords — broad set for category detection
 # Maps keyword → (canonical_type, broad_category)
 _PRODUCT_TYPE_MAP = {
@@ -94,9 +105,11 @@ def _extract_product_types(text: str) -> list[tuple[str, str]]:
     return found
 
 
-def _contains_pending_field_values(text: str, pending_fields: list[str]) -> dict:
+def _contains_pending_field_values(text: str, pending_fields: list[str],
+                                   previous_entities: dict | None = None) -> dict:
     """Check if text contains values for pending fields. Returns parsed fields."""
     parsed = {}
+    previous_entities = previous_entities or {}
 
     if "gender" in pending_fields:
         for keyword, gender in _GENDER_MAP.items():
@@ -104,11 +117,25 @@ def _contains_pending_field_values(text: str, pending_fields: list[str]) -> dict
                 parsed["gender"] = gender
                 break
 
+    if "skin_type" in pending_fields:
+        for keyword, skin_type in _SKIN_TYPE_MAP.items():
+            if keyword in text:
+                parsed["skin_type"] = skin_type
+                break
+
     if "product_type" in pending_fields:
         product_types = _extract_product_types(text)
         if product_types:
-            # Use first match
             parsed["product_type"] = product_types[0][0]
+    else:
+        # Opportunistic: honor a volunteered product type (e.g. "敏感肌面霜")
+        # only when it's in the SAME domain as the pending task, so a genuine
+        # cross-category switch ("手机") still falls through to task-switch/LLM.
+        prev_cat = previous_entities.get("category", "")
+        for canonical, broad in _extract_product_types(text):
+            if broad == prev_cat or (broad == "服饰" and prev_cat in ("服饰", "运动")):
+                parsed["product_type"] = canonical
+                break
 
     return parsed
 
@@ -256,7 +283,7 @@ async def route_clarification(
             }
 
     # 2. Contains pending field values → clarification_answer
-    parsed = _contains_pending_field_values(text, pending_fields)
+    parsed = _contains_pending_field_values(text, pending_fields, previous_entities)
     if parsed:
         logger.info("clarification_routed",
                     route="clarification_answer", method="rule",
@@ -286,7 +313,7 @@ async def route_clarification(
         elif product_types and _is_related_to_pending(product_types, previous_entities):
             # Same category with switch cue — might be clarification answer with extra words
             # e.g. "我想买男士衬衫" has "我想买" but is answering gender+product_type
-            parsed = _contains_pending_field_values(text, pending_fields)
+            parsed = _contains_pending_field_values(text, pending_fields, previous_entities)
             if parsed:
                 logger.info("clarification_routed",
                             route="clarification_answer", method="rule",
