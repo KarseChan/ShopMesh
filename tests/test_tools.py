@@ -146,41 +146,50 @@ class TestConstraintRelaxation:
 
     @pytest.mark.asyncio
     async def test_nothing_to_relax(self):
+        """无可放宽字段时返回空。category 本身是可放宽的最后手段(见 _RELAXATION_STEPS),
+        所以真正'无可放宽'的场景是空实体。"""
         from src.tools.agent_tools import constraint_relaxation
-        entities = {"category": "护肤"}
-        result = await constraint_relaxation(entities, "结果过少")
+        result = await constraint_relaxation({}, "结果过少")
         assert result["relaxed"] == []
+        assert result["steps_remaining"] == 0
 
 
 class TestAskClarification:
     @pytest.mark.asyncio
-    async def test_returns_questions(self):
+    async def test_returns_decision_structure(self):
+        """ask_clarification 返回结构化决策(question_spec),而非预制问题列表。"""
         from src.tools.agent_tools import ask_clarification
-        entities = {"category": "护肤"}
-        result = await ask_clarification(entities, [])
+        result = await ask_clarification({"category": "护肤"}, [])
         assert "should_ask" in result
-        assert "questions" in result
+        assert "strategy" in result
+        assert "question_spec" in result
         assert "reason" in result
+        # 实体完整、无 missing_critical_fields → 无需追问
+        assert result["should_ask"] is False
+        assert result["strategy"] == "none"
 
     @pytest.mark.asyncio
-    async def test_already_asked_fields_skipped(self):
+    async def test_already_asked_switches_to_assume(self):
+        """追问过一轮后,即便仍有缺失字段,也转为按假设继续而非反复追问。"""
         from src.tools.agent_tools import ask_clarification
-        entities = {"category": "护肤"}
-        result = await ask_clarification(entities, ["price_max", "brand"])
-        # Should not re-ask already asked fields
-        asked = [q["field"] for q in result["questions"]]
-        assert "price_max" not in asked
-        assert "brand" not in asked
+        result = await ask_clarification(
+            {"category": "护肤", "missing_critical_fields": ["gender", "skin_type"]},
+            ["gender"],
+        )
+        assert result["should_ask"] is False
+        assert result["strategy"] == "assume"
+        assert result["assumptions"] is not None
 
 
 # === Registry integration test ===
 
 class TestRegistryIntegration:
-    def test_all_six_tools_registered(self):
+    def test_core_tools_registered(self):
+        """核心检索/推荐工具必须注册。用子集断言,新增工具(购物车等)不应打破此测试。"""
         from src.tools.registry import get_dynamic_tools
         tools = get_dynamic_tools()
         names = {t.name for t in tools}
-        assert names == {
+        core = {
             "product_search",
             "product_detail_batch",
             "price_compare",
@@ -188,6 +197,7 @@ class TestRegistryIntegration:
             "constraint_relaxation",
             "ask_clarification",
         }
+        assert core <= names, f"缺少核心工具: {core - names}"
 
     def test_tool_schemas_valid(self):
         from src.tools.registry import get_all_tool_schemas

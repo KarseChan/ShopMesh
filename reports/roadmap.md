@@ -26,7 +26,7 @@
 - **Eval harness** ✅ — `scripts/eval_recommendation.py`,现含「优雅降级」指标(无解约束时以带标注放宽替代空结果)。
 - **Eval 缺陷闭环** ✅ — 见「已完成」。72.4%→96.6%。
 - agent 工具调用稳定性 ⬜ — 有时跳过 product_search / 过度调用(与 P-2 同源),prompt + 循环收敛。
-- test_tools.py 4 个既有失败 ⬜ — `test_all_six_tools_registered` 硬编码 6 工具(现 8+);ask_clarification/constraint_relaxation 漂移。
+- test_tools.py 4 个既有失败 ✅ — 均为测试对旧 API 的漂移(硬编码 6 工具 / `questions` 键 / category-only 放宽),已更新为断言当前正确行为(子集断言工具、question_spec 结构、空实体无可放宽)。现 20/20。
 
 ### C. 购物功能延伸(P1–P4 已完成)
 - 真实支付接入(mock→支付网关 hosted checkout;webhook 验签逻辑可复用)⬜
@@ -49,5 +49,5 @@
 > P-2、Eval harness、Eval 缺陷闭环均已完成。下一批:
 
 1. **工程收尾** — 静默异常治理(`except: pass`)、双迁移定 source of truth(Flyway vs Alembic)。降低隐性风险。
-2. **test_tools.py 4 个既有失败** — `test_all_six_tools_registered` 硬编码工具数、`ask_clarification` 返回 `question_spec`(测试仍断言旧 `questions` 键)、`constraint_relaxation` 只剩 category 时是否放宽。与代码对齐即可。
+2. **静默异常 Tier 2** — 收窄 `except Exception` 到预期异常类型,让真 bug 不被吞。
 3. **README 架构叙事** — 把成果讲清楚,否则做再多也传达不出。
