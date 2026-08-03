@@ -38,7 +38,7 @@ export default function ChatBox() {
     <div className="flex flex-col h-screen max-w-2xl mx-auto">
       {/* Header */}
       <div className="border-b px-4 py-3 bg-white">
-        <h1 className="text-lg font-bold text-gray-900">ShoppingAgent</h1>
+        <h1 className="text-lg font-bold text-gray-900">ShopMesh</h1>
         <p className="text-xs text-gray-400">智能导购助手</p>
       </div>
 
@@ -46,7 +46,7 @@ export default function ChatBox() {
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
         {messages.length === 0 && (
           <div className="text-center text-gray-400 mt-20">
-            <p className="text-lg mb-2">你好，我是 ShoppingAgent</p>
+            <p className="text-lg mb-2">你好，我是 ShopMesh</p>
             <p className="text-sm">告诉我你想找什么，我来帮你推荐</p>
           </div>
         )}
@@ -331,11 +331,22 @@ function ToolCallBubble({ toolCalls }: { toolCalls: ToolCall[] }) {
                 <span className="font-medium text-gray-700">
                   {TOOL_LABELS[tc.tool] || tc.tool}
                 </span>
-                {Object.keys(tc.args).length > 0 && (
-                  <span className="text-gray-400 ml-1">
-                    ({Object.entries(tc.args).slice(0, 2).map(([k, v]) => `${k}=${typeof v === "string" ? v.slice(0, 20) : v}`).join(", ")})
-                  </span>
-                )}
+                {(() => {
+                  // Show only meaningful scalar args (e.g. semantic_query); skip
+                  // objects (entities) and empty values that rendered as
+                  // "[object Object]" / "asked_fields=".
+                  const parts = Object.entries(tc.args)
+                    .map(([k, v]) => {
+                      if (v == null || v === "" || typeof v === "object") return null;
+                      const val = typeof v === "string" ? v.slice(0, 24) : String(v);
+                      return `${k}=${val}`;
+                    })
+                    .filter(Boolean)
+                    .slice(0, 2);
+                  return parts.length > 0 ? (
+                    <span className="text-gray-400 ml-1">({parts.join(", ")})</span>
+                  ) : null;
+                })()}
               </div>
             </div>
           ))}

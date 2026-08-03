@@ -188,14 +188,20 @@ async def run_multi_agent_stream(
                     yield {"event": "entities", "data": {"entities": output.get("entities", {})}}
 
                 elif node_name in ("search_recommend_agent", "detail_compare_agent"):
-                    tool_log = output.get("tool_calls_log", [])
-                    if tool_log:
-                        latest = tool_log[-1]
-                        tool_name = latest.get("tool", "")
-                        yield {"event": "tool_call", "data": {
-                            "tool": tool_name,
-                            "args": latest.get("args", {}),
-                        }}
+                    # Emit only on a genuine tool-call iteration. The final-answer
+                    # iteration's output ALSO carries the accumulated tool_calls_log
+                    # (alongside final_response), which would re-emit the last
+                    # tool_call and make the UI show it twice. Tool-call iterations
+                    # never set final_response (they return early), so this split
+                    # is exact.
+                    if not output.get("final_response"):
+                        tool_log = output.get("tool_calls_log", [])
+                        if tool_log:
+                            latest = tool_log[-1]
+                            yield {"event": "tool_call", "data": {
+                                "tool": latest.get("tool", ""),
+                                "args": latest.get("args", {}),
+                            }}
 
                 elif node_name == "fallback":
                     yield {"event": "fallback", "data": {"used": True}}
