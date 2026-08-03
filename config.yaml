@@ -6,7 +6,7 @@ llm:
     base_url: ${LLM_BASE_URL:-https://api.deepseek.com/v1}
     api_key: ${LLM_API_KEY}
     temperature: 0.1
-    max_tokens: 4096   # 推理模型(MiniMax-M*/DeepSeek-R1)先吐思维链再给答案,需更大 headroom
+    max_tokens: 2048   # 推理模型思维链吃 token,但 4096 会让每次调用思考更久(实测 ~32s/次) → 折中回 2048
   orchestrator:
     provider: openai_compatible
     model: ${LLM_MODEL:-deepseek-v4-flash}
