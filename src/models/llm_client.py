@@ -24,6 +24,28 @@ _BASE_DELAY = 1.0  # seconds
 _CIRCUIT_FAIL_THRESHOLD = 5    # consecutive failures to open circuit
 _CIRCUIT_RECOVERY_TIME = 30.0  # seconds before half-open
 
+# Reasoning models (MiniMax-M*, DeepSeek-R1, QwQ, …) inline their chain-of-thought
+# in `content` as <think>...</think>, with NO separate reasoning field. Downstream
+# JSON/text parsing must see only the final answer, so strip it centrally here.
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
+
+
+def _strip_think(content):
+    """Remove <think>...</think> reasoning from a completed content string.
+
+    Non-str (e.g. None when a tool_call has no content) passes through unchanged.
+    A dangling unclosed <think> (output truncated mid-reasoning by max_tokens) has
+    everything from it dropped, so the caller gets "" and fails loudly rather than
+    parsing reasoning as the answer.
+    """
+    if not isinstance(content, str):
+        return content
+    cleaned = _THINK_BLOCK_RE.sub("", content)
+    idx = cleaned.find("<think>")
+    if idx != -1:
+        cleaned = cleaned[:idx]
+    return cleaned.strip()
+
 
 class CircuitBreaker:
     """Simple circuit breaker: opens after N consecutive failures, recovers after cooldown."""
@@ -142,7 +164,12 @@ class LLMClient:
                     )
 
                 self._circuit.record_success()
-                return data["choices"][0]["message"]
+                message = data["choices"][0]["message"]
+                # Strip reasoning-model <think> blocks so callers (incl. chat_json)
+                # parse only the final answer.
+                if isinstance(message, dict) and "content" in message:
+                    message["content"] = _strip_think(message.get("content"))
+                return message
             except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout) as e:
                 last_error = e
                 delay = _BASE_DELAY * (2 ** attempt)
@@ -210,6 +237,9 @@ class LLMClient:
                 async with httpx.AsyncClient(timeout=timeout) as client:
                     async with client.stream("POST", url, json=payload, headers=headers) as resp:
                         resp.raise_for_status()
+                        # <think> stripping across streamed deltas (reasoning models).
+                        think_mode = None   # None=undecided, "think"=suppress, "plain"=passthrough
+                        think_buf = ""
                         async for line in resp.aiter_lines():
                             if not line.startswith("data: "):
                                 continue
@@ -228,9 +258,27 @@ class LLMClient:
                                         tenant_id=get_tenant_id() or "",
                                     )
                                 delta = chunk.get("choices", [{}])[0].get("delta", {})
-                                content = delta.get("content", "")
-                                if content:
-                                    yield content
+                                piece = delta.get("content", "")
+                                if not piece:
+                                    continue
+                                think_buf += piece
+                                if think_mode is None:
+                                    stripped = think_buf.lstrip()
+                                    if stripped.startswith("<think>"):
+                                        think_mode = "think"
+                                    elif stripped and not "<think>".startswith(stripped):
+                                        think_mode = "plain"
+                                    else:
+                                        continue  # ambiguous short prefix — keep buffering
+                                if think_mode == "think":
+                                    end = think_buf.find("</think>")
+                                    if end == -1:
+                                        continue  # still reasoning — suppress
+                                    think_buf = think_buf[end + len("</think>"):]
+                                    think_mode = "plain"
+                                if think_buf:
+                                    out, think_buf = think_buf, ""
+                                    yield out
                             except (json.JSONDecodeError, IndexError, KeyError):
                                 continue
                 self._circuit.record_success()
