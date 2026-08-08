@@ -34,6 +34,7 @@ INTENT_TO_AGENT: dict[str, str] = {
     "compare_products": "detail_compare_agent",
     "view_detail": "detail_compare_agent",
     "place_order": _ORDER_PLACEHOLDER,
+    "instant_order": "instant_order_agent",  # 秒送就近点单
 }
 
 _DEFAULT_AGENT = "search_recommend_agent"

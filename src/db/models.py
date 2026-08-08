@@ -35,6 +35,35 @@ class Product(SQLModel, table=True):
     embedding_text: str = ""
     rating: float = 0.0
     delivery_minutes: int = 0
+    # 秒送(V6): 商品/菜品挂到门店 + 区分实物/菜品
+    merchant_id: Optional[str] = Field(default=None, index=True)
+    item_type: str = "good"  # 'good' | 'dish'
+
+
+class Merchant(SQLModel, table=True):
+    """秒送门店 (V6). Relational SoT for 门店详情/下单履约; retrieval path uses the
+    Qdrant `merchants` collection. Kept in sync with Flyway V6__merchants.sql."""
+
+    __tablename__ = "merchants"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    merchant_id: str = Field(index=True, unique=True)
+    name: str
+    city: str = Field(default="", index=True)
+    latitude: float = 0.0
+    longitude: float = 0.0
+    category: str = Field(default="", index=True)  # 奶茶/快餐/超市便利/药店...
+    rating: float = 0.0
+    avg_price: float = 0.0
+    delivery_fee: float = 0.0
+    delivery_minutes: int = 0            # ETA
+    delivery_radius_km: float = 3.0
+    open_hour: int = 0                    # 营业起始小时
+    close_hour: int = 24                  # 营业结束小时(>24 表示次日)
+    open_hours: str = ""                  # 人读文本 "10:00-22:00"
+    tags: str = ""                        # JSON array as string
+    image_url: str = ""
+    embedding_text: str = ""
 
 
 class UserProfile(SQLModel, table=True):

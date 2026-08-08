@@ -23,6 +23,7 @@ from src.graph.preprocessing import node_preprocess
 from src.graph.specialized_agents import (
     node_agent_router,
     node_detail_compare_agent,
+    node_instant_order_agent,
     node_search_recommend_agent,
     route_to_agent,
     should_continue,
@@ -43,6 +44,7 @@ _PROGRESS_ON_START: dict[str, tuple[str, str]] = {
     "preprocess": ("understanding", "正在理解您的需求..."),
     "search_recommend_agent": ("searching", "正在搜索并为您筛选商品..."),
     "detail_compare_agent": ("comparing", "正在对比商品详情..."),
+    "instant_order_agent": ("searching", "正在为您就近查找可秒送的门店..."),
 }
 
 
@@ -71,6 +73,7 @@ def build_multi_agent_graph():
     graph.add_node("fallback", node_fallback)
     graph.add_node("search_recommend_agent", node_search_recommend_agent)
     graph.add_node("detail_compare_agent", node_detail_compare_agent)
+    graph.add_node("instant_order_agent", node_instant_order_agent)
 
     # Entry: preprocess → router
     graph.set_entry_point("preprocess")
@@ -82,11 +85,12 @@ def build_multi_agent_graph():
     graph.add_conditional_edges("agent_router", route_to_agent, {
         "search_recommend_agent": "search_recommend_agent",
         "detail_compare_agent": "detail_compare_agent",
+        "instant_order_agent": "instant_order_agent",
         "__order__": "postprocess",
     })
 
     # Each agent → should_continue → self / postprocess / fallback
-    for agent_node in ("search_recommend_agent", "detail_compare_agent"):
+    for agent_node in ("search_recommend_agent", "detail_compare_agent", "instant_order_agent"):
         graph.add_conditional_edges(agent_node, should_continue, {
             "continue": agent_node,
             "end": "postprocess",
@@ -271,6 +275,18 @@ async def run_multi_agent_stream(
                 agent_summary=final_response,
             ):
                 yield event
+        elif response_type == "merchant_cards":
+            # 秒送:门店卡片。final_response 已是确定性模板摘要(无 LLM),
+            # 直接发结构化门店 + 文本,不走 stream_explanation(那会用 LLM 重写)。
+            merchants = response_data.get("merchants", []) if response_data else []
+            if merchants:
+                yield {"event": "results", "data": {
+                    "merchants": merchants,
+                    "response_type": "merchant_cards",
+                    "response_data": response_data,
+                }}
+            if final_response:
+                yield {"event": "explanation", "data": {"text": final_response}}
         elif search_results and recommendations:
             # Fallback: old interleaved path (pre-generated text + cards)
             logger.info("sse_results_emit",

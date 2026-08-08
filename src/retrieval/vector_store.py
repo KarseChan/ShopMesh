@@ -55,6 +55,7 @@ class QdrantVectorStore(VectorStore):
             "float": PayloadSchemaType.FLOAT,
             "integer": PayloadSchemaType.INTEGER,
             "text": PayloadSchemaType.TEXT,
+            "geo": PayloadSchemaType.GEO,
         }
         schema_type = type_map.get(field_type, PayloadSchemaType.KEYWORD)
         await self._client.create_payload_index(

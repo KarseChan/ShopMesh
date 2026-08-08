@@ -213,9 +213,11 @@ def _register_prompt_builders():
         return
     from src.agents.prompts.search_recommend_prompt import build_system_prompt as search_recommend_prompt
     from src.agents.prompts.detail_compare_prompt import build_system_prompt as detail_compare_prompt
+    from src.agents.prompts.instant_order_prompt import build_system_prompt as instant_order_prompt
 
     _PROMPT_BUILDERS["search_recommend_agent"] = search_recommend_prompt
     _PROMPT_BUILDERS["detail_compare_agent"] = detail_compare_prompt
+    _PROMPT_BUILDERS["instant_order_agent"] = instant_order_prompt
 
 
 # ──────────────────────────────────────────────
@@ -581,6 +583,11 @@ async def _run_agent_loop(state: dict, agent_name: str) -> dict:
         if tool_name == "product_search" and "entities" in tool_args:
             _inject_entity_fields(tool_args["entities"], state.get("entities", {}))
 
+        # 秒送:注入用户位置(LLM 不知道坐标,由后台补;方案明说不接地图 API)
+        if tool_name == "nearby_merchant_search" and not tool_args.get("location"):
+            from src.retrieval.geo import DEMO_USER_LOCATION
+            tool_args["location"] = state.get("entities", {}).get("user_location") or DEMO_USER_LOCATION
+
         # Defensive: inject search_requests from search_plan
         if tool_name == "multi_query_search":
             if "search_requests" not in tool_args or not tool_args["search_requests"]:
@@ -720,6 +727,109 @@ async def node_search_recommend_agent(state: dict) -> dict:
 async def node_detail_compare_agent(state: dict) -> dict:
     """Unified detail + comparison agent."""
     return await _run_agent_loop(state, "detail_compare_agent")
+
+
+def _format_merchant_reply(constraints: dict, merchants: list[dict]) -> str:
+    """Deterministic NL summary of the nearby stores (no LLM)."""
+    cat = constraints.get("merchant_category") or "门店"
+    max_eta = constraints.get("max_delivery_minutes")
+    if not merchants:
+        hint = "可以放宽送达时间或换个品类试试。"
+        eta_txt = f"能在 {max_eta} 分钟内送到的" if max_eta else "附近可送达的"
+        return f"抱歉，暂时没找到{eta_txt}{cat}。{hint}"
+
+    eta_txt = f"{max_eta} 分钟内送达的" if max_eta else "附近可送达的"
+    lines = [f"为你找到 {len(merchants)} 家{eta_txt}{cat}，按送达速度排序："]
+    for i, m in enumerate(merchants, 1):
+        fee = m.get("delivery_fee")
+        fee_txt = "免配送费" if not fee else f"配送费¥{fee}"
+        lines.append(
+            f"{i}. {m['name']}｜{m['distance_km']}km｜约 {m['delivery_minutes']} 分钟送达"
+            f"｜人均¥{m.get('avg_price')}｜{fee_txt}｜评分 {m.get('rating')}"
+        )
+    return "\n".join(lines)
+
+
+def _instant_constraints(state: dict) -> dict:
+    """Get rule-parsed constraints from preprocessing, or re-parse from the message
+    (when routed here by the semantic router instead of the preprocessing fast path)."""
+    from src.agents.instant_constraint_parser import parse_instant_constraints
+    ic = (state.get("entities", {}) or {}).get("instant_constraints") or {}
+    if ic:
+        return ic
+    user_input = ""
+    for msg in reversed(state.get("messages", [])):
+        role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "type", "")
+        if role in ("user", "human"):
+            user_input = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
+            break
+    return parse_instant_constraints(user_input)
+
+
+async def _instant_recall(state: dict, ic: dict) -> dict:
+    """Deterministic 就近召回 (no LLM): nearby_merchant_search → templated reply."""
+    from src.retrieval.geo import DEMO_USER_LOCATION
+    location = (state.get("entities", {}) or {}).get("user_location") or DEMO_USER_LOCATION
+    tool_args = {
+        "location": location,
+        "semantic_query": ic.get("semantic_query", ""),
+        "merchant_category": ic.get("merchant_category"),
+        "max_delivery_minutes": ic.get("max_delivery_minutes"),
+        "budget": ic.get("budget"),
+    }
+    result = await execute_tool("nearby_merchant_search", tool_args)
+    data = result.get("data", result) if isinstance(result, dict) else {}
+    merchants = data.get("results", []) if isinstance(data, dict) else []
+    summary = _format_merchant_reply(ic, merchants)
+    logger.info("instant_order_done", sub_intent="recall", returned=len(merchants),
+                category=ic.get("merchant_category"), max_eta=ic.get("max_delivery_minutes"))
+    return {
+        "final_response": summary,
+        "response_type": "merchant_cards",
+        "response_data": {"merchants": merchants, "constraints": ic},
+        "recommendations": merchants,
+        "iteration": 1,
+        "tool_calls_log": [{"tool": "nearby_merchant_search", "args": tool_args, "result": result}],
+    }
+
+
+async def _instant_reorder(state: dict, ic: dict) -> dict:
+    """Deterministic 再来一单 (no LLM): reorder_from_history → cart summary."""
+    result = await execute_tool("reorder_from_history", {})
+    data = result.get("data", result) if isinstance(result, dict) else {}
+    if not isinstance(data, dict) or not data.get("ok"):
+        msg = data.get("message", "没有可再来一单的历史订单") if isinstance(data, dict) else "再来一单失败"
+        return {"final_response": msg, "response_type": "merchant_cards", "iteration": 1,
+                "tool_calls_log": [{"tool": "reorder_from_history", "args": {}, "result": result}]}
+    added = data.get("added", [])
+    lines = [data.get("note", "已按上次订单重组购物车")]
+    for it in added:
+        lines.append(f"· {it['name']} ×{it['qty']}  ¥{it['price']}")
+    lines.append(f"共 {data.get('cart_count')} 件，合计 ¥{data.get('cart_total')}，确认后即可下单。")
+    logger.info("instant_order_done", sub_intent="reorder", added=len(added))
+    return {
+        "final_response": "\n".join(lines),
+        "response_type": "merchant_cards",
+        "response_data": {"cart": data},
+        "iteration": 1,
+        "tool_calls_log": [{"tool": "reorder_from_history", "args": {}, "result": result}],
+    }
+
+
+async def node_instant_order_agent(state: dict) -> dict:
+    """秒送 agent — sub-intent 分流.
+
+    - recall (就近召回) / reorder (再来一单): deterministic, no LLM (单步可判定).
+    - assemble (预算内凑单): LLM ReAct 编排 (_run_agent_loop over merchant tools) —
+      the one spot the plan earmarks LLM's incremental value (多步权衡).
+    """
+    ic = _instant_constraints(state)
+    sub = ic.get("sub_intent", "recall")
+    if sub == "reorder":
+        return await _instant_reorder(state, ic)
+    if sub == "assemble":
+        return await _run_agent_loop(state, "instant_order_agent")
+    return await _instant_recall(state, ic)
 
 
 # ──────────────────────────────────────────────

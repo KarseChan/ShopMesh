@@ -39,6 +39,54 @@ def _get_user_input(state: dict) -> str:
     return getattr(msg, "content", "")
 
 
+def _try_instant_order(user_input: str, state: dict) -> dict | None:
+    """秒送 fast path: rule-parse the query; if it's a clear 就近即时点单 request,
+    short-circuit the whole product pipeline (semantic router embed + entity LLM +
+    memory recall) and route straight to the instant_order agent.
+
+    Gate is deliberately tight so it never steals a normal product query: requires
+    a merchant category AND a location/时效 signal (附近/周边 or "N分钟/半小时").
+    Constraint solving stays rule-based per the plan's recsys/agent boundary.
+    """
+    from src.agents.instant_constraint_parser import parse_instant_constraints
+    from src.retrieval.geo import DEMO_USER_LOCATION
+
+    ic = parse_instant_constraints(user_input)
+    # 就近召回:品类 + 位置/时效;组单/再来一单:显式子意图(可无位置)
+    is_recall = bool(ic["merchant_category"]) and (
+        ic["needs_location"] or ic["max_delivery_minutes"] is not None
+    )
+    is_agentic = ic["sub_intent"] in ("reorder", "assemble")
+    if not (is_recall or is_agentic):
+        return None
+
+    # No geocoding (方案明说不接地图 API): use the caller-supplied location if any,
+    # else the demo coordinate. mock 门店围绕它分布。
+    location = state.get("user_location") or DEMO_USER_LOCATION
+    entities = {
+        "instant_constraints": ic,
+        "user_location": location,
+        "category": ic["merchant_category"],  # 便于 postprocess/日志
+    }
+    logger.info("instant_order_fastpath", category=ic["merchant_category"],
+                max_eta=ic["max_delivery_minutes"], budget=ic["budget"])
+    return {
+        "intent": {
+            "user_goals": ["instant_order"],
+            "task_type": "instant_delivery",
+            "execution_hint": "nearby_search",
+        },
+        "user_goals": ["instant_order"],
+        "entities": entities,
+        "memory_chunks": [],
+        "memory_signals": {},
+        "search_plan": {"search_mode": "instant_order", "reason": "秒送就近检索,无需商品检索规划"},
+        "session_window": [],
+        "session_summary": "",
+        "user_profile": {},
+    }
+
+
 async def _run_normal_preprocessing(user_input: str, user_id: str, state: dict) -> dict:
     """Path A: normal intent + entity + memory + session (parallel).
 
@@ -52,6 +100,11 @@ async def _run_normal_preprocessing(user_input: str, user_id: str, state: dict) 
     from src.router import semantic_router
     from src.agents.entity_extractor import extract_entities_and_intent
     from src.agents.rule_extractor import rule_extract
+
+    # ── 秒送 fast path:就近即时点单直接短路,跳过商品检索全流程 ──
+    instant = _try_instant_order(user_input, state)
+    if instant is not None:
+        return instant
 
     threshold = config.get("router", {}).get("semantic_threshold", 0.80)
     prev_entities = state.get("entities", {})

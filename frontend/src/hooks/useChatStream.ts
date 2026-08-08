@@ -23,6 +23,7 @@ export interface ChatMessage {
   content: string;
   products?: Product[];
   recommendations?: Recommendation[];
+  merchants?: Merchant[];
   options?: string[];
   questions?: ClarificationQuestion[];
   toolCalls?: ToolCall[];
@@ -61,6 +62,22 @@ export interface Product {
 export interface Recommendation {
   product_id: string;
   text: string;
+}
+
+export interface Merchant {
+  merchant_id: string;
+  name: string;
+  category?: string;
+  rating?: number;
+  avg_price?: number;
+  delivery_fee?: number;
+  delivery_minutes?: number;
+  distance_km?: number;
+  open_hours?: string;
+  tags?: string[];
+  image_url?: string;
+  rank_score?: number;
+  rank_reason_text?: string;
 }
 
 export interface UseChatStreamReturn {
@@ -212,6 +229,7 @@ export function useChatStream(opts?: { sessionId?: string; accessToken?: string;
       let currentContent = "";
       let currentProducts: Product[] = [];
       let currentRecommendations: Recommendation[] = [];
+      let currentMerchants: Merchant[] = [];
       let currentOptions: string[] = [];
       let currentQuestions: ClarificationQuestion[] = [];
       let currentToolCalls: ToolCall[] = [];
@@ -252,6 +270,8 @@ export function useChatStream(opts?: { sessionId?: string; accessToken?: string;
                 currentProducts = products;
               }, (recs) => {
                 currentRecommendations = recs;
+              }, (merchants) => {
+                currentMerchants = merchants;
               }, (orderData) => {
                 setPendingOrder(orderData);
               }, (opts) => {
@@ -313,6 +333,7 @@ export function useChatStream(opts?: { sessionId?: string; accessToken?: string;
               content: currentContent || last.content,
               products: currentProducts.length > 0 ? currentProducts : last.products,
               recommendations: currentRecommendations.length > 0 ? currentRecommendations : last.recommendations,
+              merchants: currentMerchants.length > 0 ? currentMerchants : last.merchants,
               options: currentOptions.length > 0 ? currentOptions : last.options,
               questions: currentQuestions.length > 0 ? currentQuestions : last.questions,
               toolCalls: currentToolCalls.length > 0 ? currentToolCalls : last.toolCalls,
@@ -542,6 +563,7 @@ function handleSSEEvent(
   appendContent: (delta: string) => void,
   setProducts: (products: Product[]) => void,
   setRecommendations: (recs: Recommendation[]) => void,
+  setMerchants: (merchants: Merchant[]) => void,
   setPendingOrder: (order: Record<string, unknown> | null) => void,
   setOptions: (options: string[]) => void,
   setQuestions: (questions: ClarificationQuestion[]) => void,
@@ -571,6 +593,9 @@ function handleSSEEvent(
       setProducts((data.products as Product[]) || []);
       if (data.recommendations) {
         setRecommendations(data.recommendations as Recommendation[]);
+      }
+      if (data.merchants) {
+        setMerchants(data.merchants as Merchant[]);
       }
       if (setResponseType && data.response_type) {
         setResponseType(data.response_type as string, data.response_data as Record<string, unknown>);

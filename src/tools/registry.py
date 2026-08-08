@@ -13,6 +13,8 @@ import src.tools.product_detail      # noqa: F401
 import src.tools.review_tool         # noqa: F401
 import src.tools.agent_tools         # noqa: F401
 import src.tools.cart_tools          # noqa: F401
+import src.tools.merchant_search      # noqa: F401  秒送就近门店检索
+import src.tools.instant_order_tools   # noqa: F401  秒送 P3:再来一单/凑单/菜单
 
 
 def get_dynamic_tools() -> list[ToolDef]:

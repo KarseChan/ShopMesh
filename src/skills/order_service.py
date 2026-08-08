@@ -19,15 +19,11 @@ from src.skills import cart_store
 
 logger = get_logger("order_service")
 
-_PRODUCT_MAP = None
-
-
 def _product(product_id: str) -> dict | None:
-    global _PRODUCT_MAP
-    if _PRODUCT_MAP is None:
-        from src.tools.search_tool import load_products
-        _PRODUCT_MAP = {p["product_id"]: p for p in load_products() if p.get("product_id")}
-    return _PRODUCT_MAP.get(product_id)
+    # Resolves products AND 秒送 dishes (item_catalog), so this order flow works
+    # for dishes verbatim. Kept as a thin delegator to avoid a second cache.
+    from src.skills.item_catalog import find_item
+    return find_item(product_id)
 
 
 # ── 库存(Redis 原子预占,防超卖)──
@@ -169,7 +165,13 @@ async def create_order_from_cart(user_id: str, session_id: str,
             return {"ok": False, "message": f"商品 {pid} 已下架"}
         price = float(p.get("final_price") or p.get("price", 0))  # 实时价
         qty = int(ci["qty"])
-        items.append({"product_id": pid, "name": p.get("name", "商品"), "price": price, "qty": qty})
+        item = {"product_id": pid, "name": p.get("name", "商品"), "price": price, "qty": qty}
+        # 秒送:带上门店/菜品上下文(履约在门店备餐,订单历史展示门店)
+        if p.get("merchant_id"):
+            item["merchant_id"] = p["merchant_id"]
+        if p.get("item_type"):
+            item["item_type"] = p["item_type"]
+        items.append(item)
         total += price * qty
     total = round(total, 2)
 
@@ -272,6 +274,64 @@ async def refund_order(order_id: str, user_id: str | None = None) -> dict:
     await asyncio.to_thread(_db_set_status, order_id, "refunded")
     logger.info("order_refunded", order_id=order_id, released=len(items))
     return {"ok": True, "order_id": order_id, "status": "refunded"}
+
+
+# ── 秒送履约状态机(paid → 备餐 → 配送中 → 已送达)──
+# 复用订单 status 字段(自由字符串,无需新迁移)。真实场景由门店/骑手事件驱动;
+# 此处 mock:一个确定性 advance 步进 + Celery 定时自动推进(见 cleanup_tasks)。
+
+# 履约推进链:每个状态 → 下一个状态
+_FULFILLMENT_NEXT = {
+    "paid": "preparing",        # 备餐
+    "preparing": "delivering",  # 配送中
+    "delivering": "delivered",  # 已送达(终态)
+}
+
+# 处于履约中(可被自动推进)的状态
+FULFILLMENT_ACTIVE = ("paid", "preparing", "delivering")
+
+# 履约状态的人读名(供前端/文案)
+FULFILLMENT_LABELS = {
+    "paid": "已支付",
+    "preparing": "备餐中",
+    "delivering": "配送中",
+    "delivered": "已送达",
+}
+
+
+async def advance_fulfillment(order_id: str, user_id: str | None = None) -> dict:
+    """把订单沿履约链推进一步(paid→备餐→配送中→已送达)。幂等到终态。
+
+    只在已支付后可推进;未支付/已取消/已退款状态拒绝。
+    """
+    o = await asyncio.to_thread(_db_get, order_id)
+    if not o:
+        return {"ok": False, "message": "订单不存在"}
+    if user_id and o.user_id != user_id:
+        return {"ok": False, "message": "无权操作该订单"}
+    if o.status == "delivered":
+        return {"ok": True, "order_id": order_id, "status": "delivered", "done": True}
+    nxt = _FULFILLMENT_NEXT.get(o.status)
+    if not nxt:
+        return {"ok": False, "message": f"状态({o.status})不在履约链中"}
+    updated = await asyncio.to_thread(_db_set_status, order_id, nxt)
+    logger.info("order_fulfillment_advanced", order_id=order_id,
+                **{"from": o.status, "to": nxt})
+    return {"ok": True, "order_id": order_id, "status": nxt,
+            "status_label": FULFILLMENT_LABELS.get(nxt, nxt),
+            "done": nxt == "delivered"}
+
+
+def list_active_fulfillment(limit: int = 200) -> list[str]:
+    """返回处于履约中(paid/preparing/delivering)的订单号 —— 供 Celery 自动推进。"""
+    from sqlmodel import select, col
+    from src.db.engine import get_session
+    from src.db.models import Order
+    with get_session() as s:
+        rows = s.exec(
+            select(Order).where(col(Order.status).in_(FULFILLMENT_ACTIVE)).limit(limit)
+        ).all()
+        return [o.order_id for o in rows]
 
 
 async def list_orders(user_id: str, limit: int = 50) -> list[dict]:

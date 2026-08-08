@@ -427,6 +427,29 @@ async def payment_simulate(payment_ref: str):
     return await payment_service.simulate_payment(payment_ref)
 
 
+# ── 秒送(P2):门店菜单 + 履约状态推进 ──
+
+@app.get("/api/merchants/{merchant_id}/menu")
+async def merchant_menu(merchant_id: str):
+    """门店菜单(可点菜品)。组单时前端/用户据此加购。"""
+    from src.skills.item_catalog import get_menu
+    dishes = get_menu(merchant_id)
+    return {"ok": True, "merchant_id": merchant_id, "count": len(dishes), "dishes": dishes}
+
+
+@app.post("/api/orders/{order_id}/advance")
+async def advance_order(order_id: str, request: Request):
+    """【mock 履约】把订单沿履约链推进一步:备餐 → 配送中 → 已送达。
+
+    真实场景由门店/骑手事件驱动;此处手动推进用于演示,另有 Celery 定时自动推进。
+    """
+    from src.auth.context import get_context_user_id
+    from src.skills import order_service
+    body = await request.json() if request.headers.get("content-length") else {}
+    uid = get_context_user_id() or body.get("user_id")
+    return await order_service.advance_fulfillment(order_id, user_id=uid)
+
+
 @app.get("/api/tasks/{task_id}")
 async def get_task_status(task_id: str):
     """Query Celery task status.

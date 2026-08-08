@@ -14,15 +14,10 @@ from src.tools.schema import ToolDef, tool_registry
 
 logger = get_logger("cart_tools")
 
-_PRODUCT_MAP = None
-
-
 def _product(product_id: str) -> dict | None:
-    global _PRODUCT_MAP
-    if _PRODUCT_MAP is None:
-        from src.tools.search_tool import load_products
-        _PRODUCT_MAP = {p["product_id"]: p for p in load_products() if p.get("product_id")}
-    return _PRODUCT_MAP.get(product_id)
+    # Resolves products AND 秒送 dishes (item_catalog) so 加购菜品 works unchanged.
+    from src.skills.item_catalog import find_item
+    return find_item(product_id)
 
 
 def _uid() -> str | None:

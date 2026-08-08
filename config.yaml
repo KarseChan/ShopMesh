@@ -38,6 +38,7 @@ vector_db:
   provider: qdrant
   url: ${QDRANT_URL:-http://localhost:16336}
   collection: products
+  merchant_collection: merchants   # 秒送门店 geo 集合(scripts/build_merchant_index.py)
 
 # Redis
 redis:
@@ -72,6 +73,12 @@ agents:
     max_iterations: 6
     response_type: comparison_table
     tools: [product_search, product_detail_batch, price_compare, review_summary, add_to_cart, view_cart]
+  instant_order_agent:
+    # 秒送。recall(就近召回)/ reorder(再来一单)走确定性快路径(node 直调工具,无 LLM);
+    # assemble(预算内凑单)才进 LLM ReAct 编排——方案里 LLM 真正有增量价值的点(多步权衡)。
+    max_iterations: 5
+    response_type: merchant_cards
+    tools: [nearby_merchant_search, get_merchant_menu, assemble_meal, reorder_from_history, add_to_cart, view_cart, ask_clarification]
 
 # Session lifecycle
 session:

@@ -49,6 +49,11 @@ _INTENT_MAP = {
         "task_type": "order_placement",
         "execution_hint": "direct_search",
     },
+    "instant_order": {
+        "user_goal": "instant_order",
+        "task_type": "instant_delivery",
+        "execution_hint": "nearby_search",
+    },
 }
 
 

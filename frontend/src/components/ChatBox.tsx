@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { useChatStream, ChatMessage, Product, Recommendation, ClarificationQuestion, ToolCall } from "@/hooks/useChatStream";
 import { useAuth } from "@/contexts/AuthContext";
 import ProductCard from "./ProductCard";
+import MerchantCard from "./MerchantCard";
 import ComparisonTable, { type ComparisonData } from "./ComparisonTable";
 import OrderConfirm from "./OrderConfirm";
 
@@ -225,6 +226,22 @@ function MessageBubble({ message, onOrder, onProductClick, onOptionClick, onRetr
                     className="bg-gray-100 px-4 py-3 rounded-2xl rounded-bl-sm text-sm leading-relaxed text-gray-600"
                   />
                 )}
+              </>
+            ) : message.merchants && message.merchants.length > 0 ? (
+              <>
+                {/* 秒送:门店卡片(可展开菜单点单)+ 摘要文本 */}
+                {message.content && (
+                  <StreamingContent
+                    content={message.content}
+                    isStreaming={message.isStreaming}
+                    className="bg-gray-100 px-4 py-3 rounded-2xl rounded-bl-sm whitespace-pre-wrap text-sm leading-relaxed"
+                  />
+                )}
+                <div className="grid gap-2">
+                  {message.merchants.map((m, i) => (
+                    <MerchantCard key={m.merchant_id || i} merchant={m} rank={i + 1} />
+                  ))}
+                </div>
               </>
             ) : message.recommendations && message.recommendations.length > 0 && message.products ? (
               <>
