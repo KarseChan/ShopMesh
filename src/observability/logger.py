@@ -27,13 +27,25 @@ _log_file = None
 
 
 class _TeeWriter:
-    """Write to both stdout and a file simultaneously."""
+    """Write to both stdout and a file simultaneously.
+
+    stdout write is encoding-robust: on Windows the console defaults to GBK, which
+    can't encode chars like '¥' (U+00A5) that show up in LLM output — an unguarded
+    write would raise UnicodeEncodeError and **crash the request being logged**
+    (real bug: the LLM 组单 path died mid-stream on a '¥' in the model's reply).
+    The file is always UTF-8, so it keeps the exact message; stdout degrades to a
+    best-effort replacement rather than throwing.
+    """
 
     def __init__(self, file):
         self._file = file
 
     def write(self, msg):
-        sys.stdout.write(msg)
+        try:
+            sys.stdout.write(msg)
+        except UnicodeEncodeError:
+            enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+            sys.stdout.write(msg.encode(enc, errors="replace").decode(enc, errors="replace"))
         self._file.write(msg)
         self._file.flush()
 
@@ -46,6 +58,15 @@ def _configure_structlog():
     global _configured, _log_file
     if _configured:
         return
+
+    # Windows console defaults to GBK → LLM output with '¥' etc. would crash the
+    # logger. Prefer real UTF-8 stdout (correct glyphs); the _TeeWriter guard is the
+    # fallback if reconfigure isn't available. Independent of PYTHONIOENCODING so the
+    # app is robust regardless of how the server was launched.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
 
     log_cfg = config.get("logging", {})
     level = log_cfg.get("level", "INFO").upper()

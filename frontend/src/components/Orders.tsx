@@ -16,6 +16,10 @@ const STATUS_LABEL: Record<string, string> = {
   created: "待支付",
   awaiting_payment: "待支付",
   paid: "已支付",
+  // 秒送履约状态机(order_service.advance_fulfillment)
+  preparing: "备餐中",
+  delivering: "配送中",
+  delivered: "已送达",
   shipped: "已发货",
   completed: "已完成",
   cancelled: "已取消",
@@ -24,6 +28,9 @@ const STATUS_LABEL: Record<string, string> = {
 const STATUS_COLOR: Record<string, string> = {
   awaiting_payment: "bg-amber-100 text-amber-700",
   paid: "bg-green-100 text-green-700",
+  preparing: "bg-amber-100 text-amber-700",
+  delivering: "bg-blue-100 text-blue-700",
+  delivered: "bg-green-100 text-green-700",
   completed: "bg-green-100 text-green-700",
   cancelled: "bg-gray-100 text-gray-500",
   refunded: "bg-gray-100 text-gray-500",

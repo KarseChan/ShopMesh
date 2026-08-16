@@ -97,7 +97,7 @@ async def reorder_from_history(merchant_id: str | None = None) -> dict:
 
 async def assemble_meal(merchant_id: str, budget: float,
                         want: list[str] | None = None,
-                        add_to_cart: bool = False) -> dict:
+                        add_to_cart: bool = True) -> dict:
     """在某门店菜单里,预算内组一份套餐(主食+饮品等),尽量用满预算.
 
     确定性背包:按目标品类各选一道"预算内最贵"的(凑单),再用剩余预算补一道。
@@ -107,7 +107,8 @@ async def assemble_meal(merchant_id: str, budget: float,
         merchant_id: 门店 id(先由 nearby_merchant_search 得到)。
         budget: 预算上限(元)。
         want: 目标品类,如 ["主食","饮品"];缺省按菜单里可得品类。
-        add_to_cart: True 则把组好的套餐加入购物车(仍需人工确认下单)。
+        add_to_cart: 默认 True —— 把组好的套餐加入购物车(先清空再加),使"确认后即可
+            下单"的承诺与购物车状态一致;下单本身仍是人工确认闸门,本工具绝不下单。
     """
     uid = _uid()
     menu = get_menu(merchant_id)
@@ -210,7 +211,7 @@ tool_registry.register(ToolDef(
             "budget": {"type": "number", "description": "预算上限(元)"},
             "want": {"type": "array", "items": {"type": "string"},
                      "description": "目标品类,如 ['主食','饮品'],可省略"},
-            "add_to_cart": {"type": "boolean", "description": "是否直接加入购物车,默认 false", "default": False},
+            "add_to_cart": {"type": "boolean", "description": "是否把组好的套餐加入购物车,默认 true(组单即为下单做准备;下单仍需人工确认)", "default": True},
         },
         "required": ["merchant_id", "budget"],
     },
