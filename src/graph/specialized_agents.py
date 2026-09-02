@@ -17,7 +17,6 @@ import random
 from src.agents.agent_config import (
     _ORDER_PLACEHOLDER,
     get_agent_config,
-    get_tool_schemas_for_agent,
     is_order_intent,
     merge_agent_configs,
     resolve_agent,
@@ -175,6 +174,9 @@ async def node_agent_router(state: dict) -> dict:
         "active_agent": cfg.name,
         "max_iterations": cfg.max_iterations,
         "response_type": cfg.response_type,
+        # 多意图:把合并后的**工具并集**下传给执行环节。之前只存了 active_agent,
+        # _run_agent_loop 又按主 agent 名重取工具 → 次要意图的工具被静默丢掉。
+        "active_tools": cfg.tools,
     }
 
 
@@ -345,6 +347,32 @@ def _extract_search_results_from_log(tool_log: list[dict]) -> list[dict]:
     return search_results
 
 
+# user_goal → 中文标签(多意图提示用)
+_GOAL_LABELS = {
+    "find_product": "查找商品",
+    "recommend_product": "推荐商品",
+    "compare_products": "对比商品/比价",
+    "view_detail": "查看商品详情",
+    "instant_order": "就近秒送点单",
+}
+
+
+def _active_tool_names(state: dict, cfg) -> list[str]:
+    """执行时使用的工具名:优先用 router 合并的并集,否则回退 agent 自身工具。"""
+    return state.get("active_tools") or cfg.tools
+
+
+def _multi_intent_hint(state: dict) -> str:
+    """多意图时给主 agent 追加一句提示,让它别漏掉次要目标(工具已在并集里)。"""
+    goals = state.get("user_goals") or []
+    if len(goals) < 2:
+        return ""
+    labels = "、".join(_GOAL_LABELS.get(g, g) for g in goals)
+    return ("\n\n[多意图] 本次用户可能同时需要:" + labels +
+            "。请在一次对话里依次完成(例如先检索到候选,再对候选比价/看详情),"
+            "按需调用上面列出的相应工具,不要遗漏次要目标。")
+
+
 async def _run_agent_loop(state: dict, agent_name: str) -> dict:
     """Shared ReAct loop for all specialized agents.
 
@@ -358,15 +386,20 @@ async def _run_agent_loop(state: dict, agent_name: str) -> dict:
     _register_prompt_builders()
 
     cfg = get_agent_config(agent_name)
-    tool_schemas = get_tool_schemas_for_agent(agent_name)
+    # 多意图:用 router 合并的**工具并集**(无则回退 agent 自身工具)。LLM 的 tool
+    # schema 和 prompt 里的工具描述都必须用这份并集,否则次要意图的工具对 LLM 不可见。
+    from src.tools.registry import get_tool_schemas_by_names
+    active_tools = _active_tool_names(state, cfg)
+    tool_schemas = get_tool_schemas_by_names(active_tools)
 
-    # Build system prompt
+    # Build system prompt (over the union tool set)
     prompt_builder = _PROMPT_BUILDERS.get(agent_name)
     if prompt_builder:
-        system_prompt = prompt_builder(state, cfg.tools)
+        system_prompt = prompt_builder(state, active_tools)
     else:
         # Fallback: minimal prompt
         system_prompt = f"你是{agent_name}。请根据用户需求调用工具并给出回答。"
+    system_prompt += _multi_intent_hint(state)
 
     messages = _build_messages(state, system_prompt)
 
